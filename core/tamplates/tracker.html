@@ -360,6 +360,16 @@
     </div>
     <div class="form-group"><label>🏢 Отдел</label><select id="emp_department_select"><option value="">— не указан —</option></select></div>
     <div class="form-group"><label>📅 Дата выхода на работу</label><input type="date" id="emp_hired_date"></div>
+    <div class="form-group" id="empPresetWrap">
+        <label>Уровень доступа учётки <span style="font-size:0.7rem;color:var(--trk-meta);">(для нового сотрудника)</span></label>
+        <select id="emp_perm_preset">
+            <option value="user">👤 Пользователь (обычный)</option>
+            <option value="observer">👁 Наблюдатель (только просмотр)</option>
+            <option value="employee_full">🧑‍💼 Сотрудник с задачами</option>
+            <option value="lead">⭐ Руководитель</option>
+        </select>
+        <div class="assignees-hint">Учётная запись создаётся автоматически с паролем 123456.</div>
+    </div>
     <div class="form-row">
         <div class="form-group"><label>Уволен</label>
             <label class="sum-toggle" style="justify-content:flex-start;">

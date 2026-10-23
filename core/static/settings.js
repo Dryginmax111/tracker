@@ -74,6 +74,8 @@ function loadUsers(){
         state.users = d.users || [];
         state.permission_groups = d.permission_groups || [];
         state.default_user = d.default_user || [];
+        // PATCH v1.1.9: шаблоны уровня доступа
+        state.perm_presets = d.perm_presets || [];
         state.current_user_id = d.current_user_id;
         state.is_admin = !!d.is_admin;
         state.loaded = true;
@@ -148,6 +150,34 @@ function renderPermsTree(selected){
     tree.innerHTML = html;
 }
 
+// PATCH v1.1.9: применение шаблона уровня доступа к дереву прав + селект пресетов
+function applyPermPreset(key){
+    var preset = (state.perm_presets || []).find(function(p){ return p.key === key; });
+    if (!preset) return;
+    var perms = {};
+    (preset.perms || []).forEach(function(k){ perms[k] = true; });
+    renderPermsTree(perms);
+    var hint = $('permPresetHint');
+    if (hint) hint.textContent = preset.hint || '';
+}
+
+function renderPresetSelect(){
+    var sel = $('user_perm_preset'); if (!sel) return;
+    var h = '<option value="custom">— без шаблона (ручные права) —</option>';
+    (state.perm_presets || []).forEach(function(p){
+        h += '<option value="' + esc(p.key) + '">' + esc(p.name) + '</option>';
+    });
+    sel.innerHTML = h;
+    sel.value = 'user';
+}
+
+if ($('user_perm_preset')) {
+    $('user_perm_preset').addEventListener('change', function(){
+        if (this.value && this.value !== 'custom') applyPermPreset(this.value);
+        else { var hint = $('permPresetHint'); if (hint) hint.textContent = ''; }
+    });
+}
+
 function openUserModal(u){
     u = u || null;
     $('userModalTitle').textContent = u ? ('Пользователь: ' + u.username) : 'Новый пользователь';
@@ -171,6 +201,12 @@ function openUserModal(u){
     sel.value = u ? (u.employee_id || '') : '';
 
     renderPermsTree(u ? u.permissions : {});
+    // PATCH v1.1.9: селект шаблонов — только для новых пользователей
+    renderPresetSelect();
+    var presetWrap = $('permPresetWrap');
+    if (presetWrap) presetWrap.style.display = u ? 'none' : '';
+    var hintEl = $('permPresetHint');
+    if (hintEl) hintEl.textContent = '';
     syncRoleUI();
     $('userModal').classList.add('active');
 }
@@ -200,6 +236,8 @@ function saveUser(){
         employee_id: $('user_employee').value || '',
         is_active: $('user_is_active').checked,
         permissions: collectPerms(),
+        // PATCH v1.1.9: шаблон уровня доступа для новых пользователей
+        perm_preset: (!$('user_id').value && $('user_perm_preset')) ? $('user_perm_preset').value : 'custom',
     };
     if (!payload.username) { notify('❌ Укажите логин', 'error'); return; }
     if (!payload.id && !payload.password) { notify('❌ Укажите пароль для нового пользователя', 'error'); return; }

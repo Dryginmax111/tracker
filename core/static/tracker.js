@@ -2497,6 +2497,8 @@ function openEmployeeModal(emp) {
         d.classList.toggle('active', d.getAttribute('data-color') === color);
     });
     var vs = $('vacSection'); if (vs) vs.style.display = emp ? '' : 'none';
+    // PATCH v1.1.9: селект уровня доступа — только для нового сотрудника
+    var epw = $('empPresetWrap'); if (epw) epw.style.display = emp ? 'none' : '';
     _vacEditId = null; // v1.1.6: сброс режима редактирования периода
     renderVacations(emp);
     g('vac_from', ''); g('vac_to', ''); g('vac_comment', '');
@@ -2611,6 +2613,8 @@ function saveEmployee() {
         fired: fired,
         fired_date: fired ? firedDate : '',
         hired_date: $('emp_hired_date') ? ($('emp_hired_date').value || '') : '',
+        // PATCH v1.1.9: уровень доступа автосоздаваемой учётки (для нового сотрудника)
+        perm_preset: (!$('emp_id') || !$('emp_id').value) ? (($('emp_perm_preset') && $('emp_perm_preset').value) || 'user') : 'user',
     };
     apiJson('/api/tracker/employee/save', {
         method: 'POST', headers: {'Content-Type': 'application/json'},
