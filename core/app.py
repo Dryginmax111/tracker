@@ -940,7 +940,19 @@ def _autoclose_if_all_done(db, task_id, u=None):
 
 def create_app():
     cfg = json.loads(CONFIG_PATH.read_text(encoding='utf-8'))
-    app = Flask(__name__)
+    # v1.1.9.2: каталог шаблонов в проекте называется "tamplates" (историческая опечатка).
+    # Flask по умолчанию ищет "templates" -> TemplateNotFound. Явно указываем существующий каталог;
+    # если рядом есть оба — подключаем их через ChoiceLoader (templates приоритетнее).
+    _core_dir = str(BASE_DIR)
+    _has_tmpl = (BASE_DIR / 'templates').is_dir()
+    _tpl_folder = 'templates' if _has_tmpl else ('tamplates' if (BASE_DIR / 'tamplates').is_dir() else 'templates')
+    app = Flask(__name__, template_folder=_tpl_folder)
+    if _has_tmpl and (BASE_DIR / 'tamplates').is_dir():
+        from jinja2 import ChoiceLoader, FileSystemLoader
+        app.jinja_loader = ChoiceLoader([
+            FileSystemLoader(os.path.join(_core_dir, 'templates')),
+            FileSystemLoader(os.path.join(_core_dir, 'tamplates')),
+        ])
     app.secret_key = cfg.get('secret_key') or secrets.token_urlsafe(48)
     app.config['SESSION_COOKIE_HTTPONLY'] = True
     app.config['SESSION_COOKIE_SAMESITE'] = 'Lax'
