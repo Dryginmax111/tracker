@@ -238,18 +238,21 @@ function renderHolidays(){
     var wrap = $('holidaysList'); if (!wrap) return;
     var keys = Object.keys(state.holidays || {}).sort();
     if (!keys.length) { wrap.innerHTML = '<div class="dict-empty">Нет праздников</div>'; return; }
+    // v1.1.4: компактный вид — одна строка чипов вместо полноразмерных карточек
+    wrap.classList.add('hol-chips');
     var html = '';
     keys.forEach(function(k){
-        html += '<div class="settings-user" data-date="' + esc(k) + '">'
-            + '<div class="su-main"><div class="su-name">🎉 ' + esc(state.holidays[k]) + '</div>'
-            + '<div class="su-sub">' + esc(k) + '</div></div>'
-            + (state.is_admin ? '<button class="dict-action-btn danger" data-act="del">🗑</button>' : '')
-            + '</div>';
+        var p = k.split('-');
+        var dmy = p.length === 3 ? (p[2] + '.' + p[1]) : k;
+        html += '<span class="hol-chip" data-date="' + esc(k) + '" title="' + esc(k) + '">'
+            + '🎉 ' + esc(state.holidays[k]) + ' <b>' + esc(dmy) + '</b>'
+            + (state.is_admin ? '<button class="hol-chip-x" data-act="del" title="Удалить">🗑</button>' : '')
+            + '</span>';
     });
     wrap.innerHTML = html;
     wrap.querySelectorAll('[data-act="del"]').forEach(function(b){
         b.addEventListener('click', function(){
-            var dk = this.closest('.settings-user').getAttribute('data-date');
+            var dk = this.closest('.hol-chip').getAttribute('data-date');
             if (!confirm('Удалить праздник ' + dk + '?')) return;
             api('/api/tracker/holiday/delete', {
                 method:'POST', headers:{'Content-Type':'application/json'},
@@ -1323,6 +1326,37 @@ document.addEventListener('click', function(e){
         setTimeout(function(){ _wire(); _load(); }, 150);
     }
 });
+
+/* ============================================================
+   v1.1.4: светлая тема в админ-панели.
+   Тот же ключ localStorage ('reestr_tracker_theme'), что у трекера,
+   поэтому выбор темы синхронен между страницами. Класс вешается на
+   documentElement (inline-скрипт в settings.html делает это до рендера)
+   и на body — ради существующих селекторов body.trk-theme-light.
+   ============================================================ */
+(function(){
+    function apply(theme){
+        if (!document.body) { setTimeout(function(){ apply(theme); }, 30); return; }
+        var light = (theme === 'light');
+        document.documentElement.classList.toggle('trk-theme-light', light);
+        document.body.classList.toggle('trk-theme-light', light);
+        var icon = document.getElementById('setThemeIcon');
+        var label = document.getElementById('setThemeLabel');
+        if (icon) icon.textContent = light ? '🌙' : '☀️';
+        if (label) label.textContent = light ? 'Тёмная' : 'Светлая';
+    }
+    var saved = 'dark';
+    try { saved = localStorage.getItem('reestr_tracker_theme') || 'dark'; } catch(e){}
+    apply(saved);
+    var btn = document.getElementById('setThemeToggle');
+    if (btn) btn.addEventListener('click', function(){
+        var cur = 'dark';
+        try { cur = localStorage.getItem('reestr_tracker_theme') || 'dark'; } catch(e){}
+        var next = (cur === 'light') ? 'dark' : 'light';
+        try { localStorage.setItem('reestr_tracker_theme', next); } catch(e){}
+        apply(next);
+    });
+})();
 
 function boot(){ setTimeout(function(){ _wire(); _load(); }, 300); }
 if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', boot);
