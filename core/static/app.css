@@ -5740,6 +5740,9 @@ body.trk-theme-light .grid-table td.day-cell.cell-future {
 /* === Общие CSS-переменные плагинов === */
 /* Значения переключаются классом на <body>. По умолчанию — тёмная. */
 :root {
+    /* v1.1.9: light-палитра объявляется через @media — если JS применит
+       класс trk-theme-light на <html> до первого кадра (anti-flash скрипт),
+       переменные уже доступны и «клочков» не будет. */
     --trk-bg: radial-gradient(ellipse at top, #1a1612 0%, #0d0d0d 40%, #050505 100%);
     --trk-text: #e8e8e8;
     --trk-card-bg: rgba(20,20,20,0.6);
@@ -5775,7 +5778,8 @@ body.trk-theme-light .grid-table td.day-cell.cell-future {
     --trk-border-medium: rgba(245,215,110,0.18);
     --trk-border-soft: rgba(245,215,110,0.10);
     --trk-header-bg: rgba(245,215,110,0.07);
-    color-scheme: dark;
+    /* v1.1.9: color-scheme перенесён в :root — работает и когда класс темы висит на <html> до первого кадра */
+    color-scheme: dark light;
     --sum-emp-w: 140px;
     --sum-task-w: 280px;
     --pg-bg: linear-gradient(135deg, #0f0f0f 0%, #171717 100%);
@@ -5835,7 +5839,6 @@ body.trk-theme-light {
     --trk-border-medium: rgba(0,0,0,0.16);
     --trk-border-soft: rgba(0,0,0,0.10);
     --trk-header-bg: #eceff1;
-    color-scheme: light;
     --pg-bg: linear-gradient(135deg, #f5f7f9 0%, #e8ecef 100%);
     --pg-text: #212121;
     --pg-text-strong: #111111;
@@ -5857,6 +5860,70 @@ body.trk-theme-light {
     --pg-info: #0277bd;
     --pg-shadow: 0 8px 24px rgba(0, 0, 0, 0.10);
 }
+
+/* v1.1.9: дублируем light-палитру на <html> (html.trk-theme-light).
+   Антифлеш-скрипт вешает класс на documentElement до загрузки CSS/JS;
+   без этого правила всё, что стилизуется переменными и селекторами
+   body.trk-theme-light, оставалось тёмным — тема выглядела «клочками». */
+html.trk-theme-light {
+    --trk-bg: linear-gradient(145deg, #f5f5f5 0%, #eceff1 50%, #cfd8dc 100%);
+    --trk-text: #212121;
+    --trk-card-bg: #ffffff;
+    --trk-card-border: rgba(0,0,0,0.16);
+    --trk-panel-bg: #ffffff;
+    --trk-input-bg: #f5f5f5;
+    --trk-input-border: rgba(0,0,0,0.22);
+    --trk-input-focus: #00897b;
+    --trk-modal-bg: #ffffff;
+    --trk-modal-border: rgba(0,0,0,0.18);
+    --trk-meta: #5a5a5a;
+    --trk-desc: #3a3a3a;
+    --trk-accent: #00897b;
+    --trk-accent-2: #ef6c00;
+    --trk-btn-text: #ffffff;
+    --trk-btn-grad: linear-gradient(135deg, #00897b, #ef6c00);
+    --trk-filter-border: rgba(0,0,0,0.22);
+    --trk-filter-color: #37474f;
+    --trk-filter-active-bg: rgba(0,137,123,0.12);
+    --trk-filter-active: #00695c;
+    --trk-hover-row: #fafafa;
+    --trk-glass-bg: #ffffff;
+    --trk-shadow: 0 1px 2px rgba(0,0,0,0.08), 0 4px 12px rgba(0,0,0,0.06);
+    --trk-ok: #2e7d32;
+    --trk-warn: #ef6c00;
+    --trk-err: #c62828;
+    --trk-info: #0277bd;
+    --trk-weekend-bg: rgba(96,125,139,0.14);
+    --trk-holiday-bg: rgba(198,40,40,0.12);
+    --trk-holiday-text: #c62828;
+    --trk-border-strong: rgba(0,0,0,0.24);
+    --trk-border-medium: rgba(0,0,0,0.16);
+    --trk-border-soft: rgba(0,0,0,0.10);
+    --trk-header-bg: #eceff1;
+    --pg-bg: linear-gradient(135deg, #f5f7f9 0%, #e8ecef 100%);
+    --pg-text: #212121;
+    --pg-text-strong: #111111;
+    --pg-meta: #5a6a72;
+    --pg-desc: #37474f;
+    --pg-card-bg: #ffffff;
+    --pg-card-border: rgba(0, 0, 0, 0.14);
+    --pg-card-border-soft: rgba(0, 0, 0, 0.08);
+    --pg-input-bg: #ffffff;
+    --pg-input-border: rgba(0, 0, 0, 0.20);
+    --pg-accent: #00695c;
+    --pg-accent-2: #ef6c00;
+    --pg-accent-bg: rgba(0, 137, 123, 0.12);
+    --pg-inner-bg: #f0f2f4;
+    --pg-inner-bg-soft: #e8ecef;
+    --pg-ok: #2e7d32;
+    --pg-err: #c62828;
+    --pg-warn: #b7950b;
+    --pg-info: #0277bd;
+    --pg-shadow: 0 8px 24px rgba(0, 0, 0, 0.10);
+    color-scheme: light;
+}
+/* базовый фон страницы при свете, если класс пока только на <html> */
+html.trk-theme-light body { background: var(--trk-bg); color: var(--trk-text); }
 
 /* === Универсальная страница плагина === */
 body.plugin-page {
@@ -10471,30 +10538,44 @@ body.trk-theme-light .trk-ra-list { background: #ffffff; border-color: rgba(0,0,
 /* ============================================================
    v1.1.4: блоки вкладки «База данных» (админ-панель)
    ============================================================ */
+/* v1.1.9: вкладки «База данных» — без столбцов, единая колонка блоков */
 .db-blocks {
-    display: grid;
-    grid-template-columns: repeat(auto-fit, minmax(340px, 1fr));
-    gap: 14px;
-    align-items: start;
+    display: flex;
+    flex-direction: column;
+    gap: 16px;
 }
 .db-block {
     background: var(--trk-card-bg);
     border: 1px solid var(--trk-card-border);
     border-radius: 14px;
-    padding: 16px 18px 14px;
+    padding: 0 20px 16px;
     box-shadow: 0 2px 10px rgba(0,0,0,0.18);
+    overflow: hidden; /* long paths never escape the card */
 }
 .db-block-head {
     font-size: .95rem;
     font-weight: 800;
     color: var(--trk-accent, #f5d76e);
-    padding-bottom: 10px;
-    margin-bottom: 12px;
+    padding: 13px 20px;
+    margin: 0 -20px 14px;
+    background: var(--trk-header-bg);
     border-bottom: 1px solid var(--trk-card-border);
     letter-spacing: .3px;
 }
 .db-block .form-group:first-of-type { margin-top: 0; }
-@media (max-width: 760px) { .db-blocks { grid-template-columns: 1fr; } }
+/* длинные пути/значения — перенос внутри блока, а не наружу */
+.db-block .form-group, .db-block label, .db-block input, .db-block select { min-width: 0; }
+.db-block .db-path-row { flex-wrap: wrap; }
+.db-block .db-path-row input[type="text"] {
+    flex: 1 1 260px;
+    min-width: 0;
+    overflow-wrap: anywhere;
+}
+.db-block input[type="text"], .db-block .db-path-note, .db-block .settings-hint {
+    overflow-wrap: anywhere;
+    word-break: normal;
+}
+.db-block .db-path-note { line-height: 1.55; }
 
 /* ============================================================
    v1.1.4: компактный список праздников (вкладка «Праздники»)
@@ -10536,3 +10617,40 @@ body.trk-theme-light .trk-ra-list { background: #ffffff; border-color: rgba(0,0,
     background: #f5f5f5; color: #212121; border-color: rgba(0,0,0,0.22);
 }
 .trk-theme-light .audit-row, .trk-theme-light .perm-group { background: #fafafa; }
+
+/* ============================================================
+   v1.1.9: светлая тема админ-панели — сплошной фон вместо «клочков».
+   Раньше в settings.html класс trk-theme-light висел только на <html>,
+   а правила темы написаны как body.trk-theme-light (переменные --trk-*
+   объявлены в теле этого селектора) — поэтому половина интерфейса
+   оставалась тёмной. settings.js теперь вешает класс и на html, и на body;
+   ниже — добивающие правки специфичных классов страницы настроек.
+   ============================================================ */
+body.trk-theme-light { background: linear-gradient(160deg, #eef2f4 0%, #e3eaee 100%) fixed !important; }
+body.trk-theme-light .settings-container .form-group input[type="text"],
+body.trk-theme-light .settings-container .form-group input[type="number"],
+body.trk-theme-light .settings-container .form-group select,
+body.trk-theme-light .settings-container .form-group textarea {
+    background: #ffffff; color: #212121; border-color: rgba(0,0,0,0.20);
+}
+body.trk-theme-light .db-block {
+    background: #ffffff; border-color: rgba(0,0,0,0.10);
+    box-shadow: 0 1px 2px rgba(0,0,0,0.05), 0 6px 18px rgba(0,0,0,0.06);
+}
+body.trk-theme-light .db-block-head {
+    background: #f2f6f7; border-bottom-color: rgba(0,0,0,0.08); color: #00695c;
+}
+body.trk-theme-light .db-path-note,
+body.trk-theme-light .settings-hint { color: #5a6a72; }
+body.trk-theme-light .sum-toggle { color: #37474f; }
+body.trk-theme-light .dict-empty { color: #78909c; }
+body.trk-theme-light .db-backup-list > div { background: #f7f9fa; border-color: rgba(0,0,0,0.08); color: #212121; }
+body.trk-theme-light .audit-row, body.trk-theme-light .perm-group {
+    background: #f7f9fa; border-color: rgba(0,0,0,0.08); color: #212121;
+}
+body.trk-theme-light .plugins-manager > div { background: #ffffff; border-color: rgba(0,0,0,0.10); }
+body.trk-theme-light .theme-toggle-btn.active,
+body.trk-theme-light .tracker-back-btn:hover,
+body.trk-theme-light .theme-toggle-btn:hover {
+    background: rgba(0,137,123,0.10); border-color: #00695c; color: #00695c;
+}

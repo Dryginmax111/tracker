@@ -237,13 +237,21 @@ def register(app, db, hooks):
         return app.response_class(_JS, mimetype='application/javascript')
 
     def _auth():
+        # PATCH v1.1.9: не глотать исключения молча — печатать причину,
+        # иначе «Отчёт за день» выглядит как «не работает» без следов в логе.
         try:
             from auth import current_user, user_has
             u = current_user(db)
-            if not u or not user_has(db, u, 'plugin.daily_report.use'):
+            if not u:
+                return None
+            if not user_has(db, u, 'plugin.daily_report.use'):
+                print('[daily_report] отказано в доступе: у пользователя нет права plugin.daily_report.use')
                 return None
             return u
         except Exception:
+            import traceback
+            print('[daily_report] ошибка авторизации:')
+            traceback.print_exc()
             return None
 
     @app.route('/plugins/daily_report/', methods=['GET'])
@@ -251,6 +259,34 @@ def register(app, db, hooks):
         if not _auth():
             return redirect('/login')
         return Response(_page_html(), mimetype='text/html')
+
+    @app.route('/api/plugins/daily_report/selftest', methods=['GET'])
+    def _dr_selftest():
+        """PATCH v1.1.9: диагностика — почему «не работает»: auth / routes / data."""
+        import traceback as _tb
+        out = {'plugin_version': __version__}
+        try:
+            from auth import current_user, user_has
+            u = current_user(db)
+            out['logged_in'] = bool(u)
+            out['user'] = (u or {}).get('username')
+            out['perm_ok'] = bool(u and user_has(db, u, 'plugin.daily_report.use'))
+        except Exception:
+            out['auth_error'] = _tb.format_exc(limit=2)
+        try:
+            rules = sorted(str(r.rule) for r in app.url_map.iter_rules() if 'daily_report' in str(r))
+            out['routes'] = rules
+        except Exception:
+            out['routes_error'] = _tb.format_exc(limit=2)
+        try:
+            day = date.today().strftime('%Y-%m-%d')
+            d = db.load_all(since=day)
+            out['db_ok'] = True
+            out['today_logs'] = len([l for l in d.get('log', []) if (l.get('date') or '') == day])
+        except Exception:
+            out['db_ok'] = False
+            out['db_error'] = _tb.format_exc(limit=3)
+        return jsonify(out)
 
     @app.route('/api/plugins/daily_report/data', methods=['GET'])
     def _dr_data():
@@ -260,7 +296,14 @@ def register(app, db, hooks):
         if not _valid_date(day):
             day = date.today().strftime('%Y-%m-%d')
 
-        data = db.load_all()
+        try:
+            # PATCH v1.1.9: since=day — читаем только логи этого дня (без кэша
+            # и без полного слепка всех work_logs — быстрее и меньше памяти).
+            data = db.load_all(since=day)
+        except Exception:
+            import traceback
+            traceback.print_exc()
+            return jsonify({'success': False, 'error': 'internal: ' + str(traceback.format_exc(limit=1))}), 500
         employees = data.get('employees', [])
         emp_by_id = {e['id']: e for e in employees}
         dept_by_id = {d['id']: d for d in data.get('departments', [])}
@@ -297,9 +340,10 @@ def register(app, db, hooks):
             h = emp_hours.get(e['id'], 0.0)
             if not h:
                 continue
-            dn = dept_by_id.get(e.get('department_id') or '')
-            if dn:
-                dept_hours[dn['name']] = dept_hours.get(dn['name'], 0.0) + h
+            # PATCH v1.1.9: db.load_all уже кладёт имя отдела в e['department']
+            dn_name = e.get('department') or (dept_by_id.get(e.get('department_id') or '') or {}).get('name', '')
+            if dn_name:
+                dept_hours[dn_name] = dept_hours.get(dn_name, 0.0) + h
         for tm in data.get('teams', []):
             th = sum(emp_hours.get(mid, 0.0) for mid in tm.get('member_ids', []))
             if th:

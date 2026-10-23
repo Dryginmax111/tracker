@@ -1328,34 +1328,55 @@ document.addEventListener('click', function(e){
 });
 
 /* ============================================================
-   v1.1.4: светлая тема в админ-панели.
-   Тот же ключ localStorage ('reestr_tracker_theme'), что у трекера,
-   поэтому выбор темы синхронен между страницами. Класс вешается на
-   documentElement (inline-скрипт в settings.html делает это до рендера)
-   и на body — ради существующих селекторов body.trk-theme-light.
+   v1.1.9: светлая тема в админ-панели (переписано).
+   Прежняя версия ломалась по двум причинам:
+     1) inline-скрипт в settings.html вешал класс trk-theme-light только
+        на <html>, а все правила темы написаны как body.trk-theme-light —
+        тема применялась «клочками» (только .trk-theme-light-селекторы);
+     2) обработчик кнопки был завязан на DOMContentLoaded — при ошибке
+        загрузки скрипта кнопка вообще не работала.
+   Теперь: единый apply() вешает класс одновременно на html и body,
+   читает тот же ключ localStorage, что и трекер ('reestr_tracker_theme'),
+   кнопка подключается сразу (script в конце body) + страховка на DOMContentLoaded.
    ============================================================ */
 (function(){
-    function apply(theme){
-        if (!document.body) { setTimeout(function(){ apply(theme); }, 30); return; }
+    var THEME_KEY = 'reestr_tracker_theme';
+    function getSaved(){
+        try { return localStorage.getItem(THEME_KEY) || 'dark'; } catch(e){ return 'dark'; }
+    }
+    window._trkApplySettingsTheme = function(theme){
         var light = (theme === 'light');
-        document.documentElement.classList.toggle('trk-theme-light', light);
-        document.body.classList.toggle('trk-theme-light', light);
+        // html+body — чтобы работали и body.trk-theme-light, и .trk-theme-light селекторы;
+        // color-scheme тоже переключается (правило объявлено внутри блока переменных light)
+        var root = document.documentElement;
+        root.classList.toggle('trk-theme-light', light);
+        if (window.CSS && CSS.supports && CSS.supports('color-scheme','light')) {
+            root.style.colorScheme = light ? 'light' : 'dark';
+        }
+        if (document.body) document.body.classList.toggle('trk-theme-light', light);
         var icon = document.getElementById('setThemeIcon');
         var label = document.getElementById('setThemeLabel');
         if (icon) icon.textContent = light ? '🌙' : '☀️';
         if (label) label.textContent = light ? 'Тёмная' : 'Светлая';
+    };
+    function wireBtn(){
+        var btn = document.getElementById('setThemeToggle');
+        if (!btn || btn.dataset.themeWired) return;
+        btn.dataset.themeWired = '1';
+        btn.addEventListener('click', function(){
+            var next = (getSaved() === 'light') ? 'dark' : 'light';
+            try { localStorage.setItem(THEME_KEY, next); } catch(e){}
+            window._trkApplySettingsTheme(next);
+        });
     }
-    var saved = 'dark';
-    try { saved = localStorage.getItem('reestr_tracker_theme') || 'dark'; } catch(e){}
-    apply(saved);
-    var btn = document.getElementById('setThemeToggle');
-    if (btn) btn.addEventListener('click', function(){
-        var cur = 'dark';
-        try { cur = localStorage.getItem('reestr_tracker_theme') || 'dark'; } catch(e){}
-        var next = (cur === 'light') ? 'dark' : 'light';
-        try { localStorage.setItem('reestr_tracker_theme', next); } catch(e){}
-        apply(next);
-    });
+    window._trkApplySettingsTheme(getSaved());
+    wireBtn();
+    if (!document.getElementById('setThemeToggle')) {
+        document.addEventListener('DOMContentLoaded', function(){
+            window._trkApplySettingsTheme(getSaved());
+            wireBtn();
+        });
+    }
 })();
 
 function boot(){ setTimeout(function(){ _wire(); _load(); }, 300); }
