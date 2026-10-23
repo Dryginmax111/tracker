@@ -91,15 +91,60 @@ CREATE TABLE IF NOT EXISTS task_departments (
   PRIMARY KEY (task_id, department_id)
 );
 
+-- PATCH v1.2.0: иерархия Проверка(tasks) -> Гипотеза(task_hypotheses) -> Задание(task_jobs)
+CREATE TABLE IF NOT EXISTS task_hypotheses (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  task_id TEXT NOT NULL,
+  name TEXT NOT NULL,
+  formulation TEXT DEFAULT '',
+  start_date TEXT DEFAULT '',
+  deadline TEXT DEFAULT '',
+  status TEXT DEFAULT 'active',
+  color TEXT DEFAULT '',
+  sort_order INTEGER DEFAULT 0,
+  created_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_hyp_task ON task_hypotheses (task_id);
+
+CREATE TABLE IF NOT EXISTS hypothesis_assignees (
+  hypothesis_id INTEGER NOT NULL,
+  employee_id TEXT NOT NULL,
+  PRIMARY KEY (hypothesis_id, employee_id)
+);
+
+CREATE TABLE IF NOT EXISTS task_jobs (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  hypothesis_id INTEGER NOT NULL,
+  name TEXT NOT NULL,
+  description TEXT DEFAULT '',
+  start_date TEXT DEFAULT '',
+  deadline TEXT DEFAULT '',
+  status TEXT DEFAULT 'active',
+  sort_order INTEGER DEFAULT 0,
+  created_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_job_hyp ON task_jobs (hypothesis_id);
+
+CREATE TABLE IF NOT EXISTS job_assignees (
+  job_id INTEGER NOT NULL,
+  employee_id TEXT NOT NULL,
+  PRIMARY KEY (job_id, employee_id)
+);
+
 CREATE TABLE IF NOT EXISTS work_logs (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   employee_id TEXT NOT NULL,
   task_id TEXT NOT NULL,
+  hypothesis_id INTEGER DEFAULT 0,
+  job_id INTEGER DEFAULT 0,
   date TEXT NOT NULL,
   hours REAL NOT NULL DEFAULT 0,
   comment TEXT DEFAULT '',
   status TEXT DEFAULT 'in_progress',
   link TEXT DEFAULT '',
+  extra_data_json TEXT DEFAULT '',
+  orders_json TEXT DEFAULT '',
+  links_json TEXT DEFAULT '',
   created_at TEXT NOT NULL,
   updated_at TEXT DEFAULT ''
 );
