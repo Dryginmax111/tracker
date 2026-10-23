@@ -1068,6 +1068,63 @@ def create_app():
             print('[INIT] work_logs.links_json добавлено')
     except Exception as _e:
         print(f'[INIT] migration work_logs json: {_e}')
+    # PATCH v1.2.0 — миграция: иерархия Проверка(tasks) -> Гипотеза(task_hypotheses) -> Задание(task_jobs)
+    try:
+        _t = set(r['name'] for r in db.query(
+            "SELECT name FROM sqlite_master WHERE type='table'"))
+        if 'task_hypotheses' not in _t:
+            db.exec("""CREATE TABLE task_hypotheses (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                task_id TEXT NOT NULL,
+                name TEXT NOT NULL,
+                formulation TEXT DEFAULT '',
+                start_date TEXT DEFAULT '',
+                deadline TEXT DEFAULT '',
+                status TEXT DEFAULT 'active',
+                color TEXT DEFAULT '',
+                sort_order INTEGER DEFAULT 0,
+                created_at TEXT NOT NULL)""")
+            print('[INIT] table task_hypotheses создана')
+        if 'hypothesis_assignees' not in _t:
+            db.exec("""CREATE TABLE hypothesis_assignees (
+                hypothesis_id INTEGER NOT NULL,
+                employee_id TEXT NOT NULL,
+                PRIMARY KEY (hypothesis_id, employee_id))""")
+            print('[INIT] table hypothesis_assignees создана')
+        if 'task_jobs' not in _t:
+            db.exec("""CREATE TABLE task_jobs (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                hypothesis_id INTEGER NOT NULL,
+                name TEXT NOT NULL,
+                description TEXT DEFAULT '',
+                start_date TEXT DEFAULT '',
+                deadline TEXT DEFAULT '',
+                status TEXT DEFAULT 'active',
+                sort_order INTEGER DEFAULT 0,
+                created_at TEXT NOT NULL)""")
+            print('[INIT] table task_jobs создана')
+        if 'job_assignees' not in _t:
+            db.exec("""CREATE TABLE job_assignees (
+                job_id INTEGER NOT NULL,
+                employee_id TEXT NOT NULL,
+                PRIMARY KEY (job_id, employee_id))""")
+            print('[INIT] table job_assignees создана')
+        db.exec('CREATE INDEX IF NOT EXISTS idx_hyp_task ON task_hypotheses (task_id)')
+        db.exec('CREATE INDEX IF NOT EXISTS idx_job_hyp ON task_jobs (hypothesis_id)')
+        db.exec('CREATE INDEX IF NOT EXISTS idx_ha_emp ON hypothesis_assignees (employee_id)')
+        db.exec('CREATE INDEX IF NOT EXISTS idx_ja_emp ON job_assignees (employee_id)')
+        _wl = [r['name'] for r in db.query('PRAGMA table_info(work_logs)')]
+        if 'hypothesis_id' not in _wl:
+            db.exec("ALTER TABLE work_logs ADD COLUMN hypothesis_id INTEGER DEFAULT 0")
+            print('[INIT] work_logs.hypothesis_id добавлено')
+        if 'job_id' not in _wl:
+            db.exec("ALTER TABLE work_logs ADD COLUMN job_id INTEGER DEFAULT 0")
+            print('[INIT] work_logs.job_id добавлено')
+        db.exec('CREATE INDEX IF NOT EXISTS idx_wl_hyp ON work_logs (hypothesis_id)')
+        db.exec('CREATE INDEX IF NOT EXISTS idx_wl_job ON work_logs (job_id)')
+        print('[INIT] v1.2.0 иерархия гипотез готова')
+    except Exception as _e:
+        print(f'[INIT] migration v1.2.0 hierarchy: {_e}')
     app.config['DB'] = db
     app.config['APP_CONFIG'] = cfg
 
@@ -1891,8 +1948,139 @@ def create_app():
         _snapshot = {'logs_deleted': len(_logs)} if _logs else {}
         # PATCH v2: передаём drop_logs=True — удаляем в одной транзакции с задачей
         db.delete_task(tid, drop_logs=bool(_logs))
+        # PATCH v1.2.0: каскадно удаляем гипотезы/задания проверки
+        try:
+            for _h in db.query('SELECT id FROM task_hypotheses WHERE task_id=?', (tid,)):
+                db.delete_hypothesis(_h['id'], drop_jobs=True)
+        except Exception as _he:
+            print(f'[task/delete] hierarchy cleanup: {_he}')
         _audit(db, current_user(db), 'delete', 'task', tid, _snapshot)
         return jsonify({'success': True, 'logs_deleted': len(_logs) if _logs else 0})
+
+    # ============================================================
+    # PATCH v1.2.0 — API: ГИПОТЕЗЫ И ЗАДАНИЯ (Проверка -> Гипотеза -> Задание)
+    # ============================================================
+    def _hyp_payload(body):
+        _asg = body.get('assignees') or []
+        if not isinstance(_asg, list):
+            _asg = []
+        return {
+            'name': str(body.get('name', '')).strip()[:300],
+            'formulation': str(body.get('formulation', '')).strip()[:4000],
+            'start_date': str(body.get('start_date', '')).strip()[:20],
+            'deadline': str(body.get('deadline', '')).strip()[:20],
+            'status': str(body.get('status', 'active')).strip()[:20],
+            'color': str(body.get('color', '')).strip()[:20],
+            'sort_order': int(body.get('sort_order') or 0),
+            'assignees': [str(x).strip()[:64] for x in _asg if str(x or '').strip()][:50],
+        }
+
+    @app.route('/api/tracker/hypothesis/save', methods=['POST'])
+    @login_required
+    @permission_required('action.task.edit')
+    def api_hypothesis_save():
+        body = request.get_json() or {}
+        hid_raw = body.get('id')
+        task_id = str(body.get('task_id', '')).strip()
+        if not task_id or not db.query_one('SELECT id FROM tasks WHERE id=?', (task_id,)):
+            return jsonify({'success': False, 'error': 'Задача (проверка) не найдена'}), 400
+        p = _hyp_payload(body)
+        if not p['name']:
+            return jsonify({'success': False, 'error': 'Укажите название гипотезы'}), 400
+        for _d in (p['start_date'], p['deadline']):
+            if _d and not _valid_date(_d):
+                return jsonify({'success': False, 'error': f'Некорректная дата: {_d}'}), 400
+        # сроки гипотезы должны попадать в сроки проверки (если заданы)
+        _t = db.query_one('SELECT start_date, deadline FROM tasks WHERE id=?', (task_id,))
+        if _t:
+            if p['start_date'] and _t['start_date'] and p['start_date'] < _t['start_date']:
+                return jsonify({'success': False,
+                                'error': f'Начало гипотезы раньше начала проверки ({_t["start_date"]})'}), 400
+            if p['deadline'] and _t['deadline'] and p['deadline'] > _t['deadline']:
+                return jsonify({'success': False,
+                                'error': f'Срок гипотезы позже срока проверки ({_t["deadline"]})'}), 400
+        hid = db.save_hypothesis(int(hid_raw) if hid_raw else None, task_id, p)
+        _audit(db, current_user(db), 'create' if not hid_raw else 'update',
+               'hypothesis', hid, {'task_id': task_id, 'name': p['name']})
+        return jsonify({'success': True, 'id': hid})
+
+    @app.route('/api/tracker/hypothesis/delete', methods=['POST'])
+    @login_required
+    @permission_required('action.task.edit')
+    def api_hypothesis_delete():
+        body = request.get_json() or {}
+        hid = int(body.get('id') or 0)
+        if not hid:
+            return jsonify({'success': False, 'error': 'Не указан id'}), 400
+        _jobs = db.query(
+            'SELECT COUNT(*) AS c FROM work_logs w JOIN task_jobs j ON j.id=w.job_id '
+            'WHERE j.hypothesis_id=? AND (w.hypothesis_id=? OR w.job_id IN '
+            '(SELECT id FROM task_jobs WHERE hypothesis_id=?))', (hid, hid, hid))
+        _linked = int(_jobs[0]['c']) if _jobs else 0
+        if _linked and not bool(body.get('force')):
+            return jsonify({'success': False, 'error': 'hyp_has_logs', 'logs_count': _linked,
+                            'message': 'К гипотезе/её заданиям привязаны отметки'}), 409
+        db.delete_hypothesis(hid, drop_jobs=True)
+        _audit(db, current_user(db), 'delete', 'hypothesis', hid, {})
+        return jsonify({'success': True})
+
+    def _job_payload(body):
+        _asg = body.get('assignees') or []
+        if not isinstance(_asg, list):
+            _asg = []
+        return {
+            'name': str(body.get('name', '')).strip()[:300],
+            'description': str(body.get('description', '')).strip()[:4000],
+            'start_date': str(body.get('start_date', '')).strip()[:20],
+            'deadline': str(body.get('deadline', '')).strip()[:20],
+            'status': str(body.get('status', 'active')).strip()[:20],
+            'sort_order': int(body.get('sort_order') or 0),
+            'assignees': [str(x).strip()[:64] for x in _asg if str(x or '').strip()][:50],
+        }
+
+    @app.route('/api/tracker/job/save', methods=['POST'])
+    @login_required
+    @permission_required('action.task.edit')
+    def api_job_save():
+        body = request.get_json() or {}
+        jid_raw = body.get('id')
+        hyp_id = int(body.get('hypothesis_id') or 0)
+        _h = db.query_one('SELECT id, task_id, start_date, deadline FROM task_hypotheses WHERE id=?', (hyp_id,))
+        if not _h:
+            return jsonify({'success': False, 'error': 'Гипотеза не найдена'}), 400
+        p = _job_payload(body)
+        if not p['name']:
+            return jsonify({'success': False, 'error': 'Укажите название задания'}), 400
+        for _d in (p['start_date'], p['deadline']):
+            if _d and not _valid_date(_d):
+                return jsonify({'success': False, 'error': f'Некорректная дата: {_d}'}), 400
+        if p['start_date'] and _h['start_date'] and p['start_date'] < _h['start_date']:
+            return jsonify({'success': False,
+                            'error': f'Начало задания раньше начала гипотезы ({_h["start_date"]})'}), 400
+        if p['deadline'] and _h['deadline'] and p['deadline'] > _h['deadline']:
+            return jsonify({'success': False,
+                            'error': f'Срок задания позже срока гипотезы ({_h["deadline"]})'}), 400
+        jid = db.save_job(int(jid_raw) if jid_raw else None, hyp_id, p)
+        _audit(db, current_user(db), 'create' if not jid_raw else 'update',
+               'job', jid, {'hypothesis_id': hyp_id, 'name': p['name']})
+        return jsonify({'success': True, 'id': jid})
+
+    @app.route('/api/tracker/job/delete', methods=['POST'])
+    @login_required
+    @permission_required('action.task.edit')
+    def api_job_delete():
+        body = request.get_json() or {}
+        jid = int(body.get('id') or 0)
+        if not jid:
+            return jsonify({'success': False, 'error': 'Не указан id'}), 400
+        _c = db.query('SELECT COUNT(*) AS c FROM work_logs WHERE job_id=?', (jid,))
+        _linked = int(_c[0]['c']) if _c else 0
+        if _linked and not bool(body.get('force')):
+            return jsonify({'success': False, 'error': 'job_has_logs', 'logs_count': _linked,
+                            'message': 'К заданию привязаны отметки'}), 409
+        db.delete_job(jid)
+        _audit(db, current_user(db), 'delete', 'job', jid, {})
+        return jsonify({'success': True})
 
     # ============================================================
     # v1.2.7 — API: TASK MERGE
@@ -2222,6 +2410,9 @@ def create_app():
                 'extra_data_json': _extra_json,
                 'orders_json': _orders_json,
                 'links_json': _links_json,
+                # PATCH v1.2.0: привязка отметки к гипотезе/заданию (детализатор часов)
+                'hypothesis_id': int(body.get('hypothesis_id') or 0),
+                'job_id': int(body.get('job_id') or 0),
             }
         )
         _audit(db, u, 'create' if created else 'update', 'log', log_id_raw or created,

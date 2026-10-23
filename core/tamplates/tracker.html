@@ -500,6 +500,15 @@
         <div class="assignees-list" id="taskAssigneesList"></div>
         <div class="assignees-hint" id="taskAssigneesHint"></div>
     </div>
+    <!-- PATCH v1.2.0: иерархия Проверка → Гипотезы → Задания -->
+    <div class="form-group hyp-tree-group" id="hypTreeGroup" hidden>
+        <div class="hyp-tree-head">
+            <label>🧪 Гипотезы проверки</label>
+            <button type="button" class="btn btn-small" id="addHypBtn">＋ Гипотеза</button>
+        </div>
+        <div class="hyp-tree-hint">Сроки гипотез должны находиться внутри сроков проверки. Часы отметок можно привязывать к гипотезе или заданию.</div>
+        <div id="hypTreeList" class="hyp-tree-list"></div>
+    </div>
     <div class="modal-actions">
         <button class="btn btn-primary" id="saveTaskBtn">💾 Сохранить</button>
         <button class="btn btn-secondary" data-close="taskModal">Закрыть</button>

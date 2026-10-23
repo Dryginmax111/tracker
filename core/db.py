@@ -267,6 +267,41 @@ class TrackerDB:
 
         holidays = {h['date']: h['name'] for h in self.query('SELECT * FROM holidays')}
 
+        # PATCH v1.2.0: иерархия Проверка -> Гипотеза -> Задание
+        hypotheses = []
+        jobs = []
+        try:
+            hypotheses = [dict(r) for r in self.query(
+                'SELECT * FROM task_hypotheses ORDER BY task_id, sort_order, id')]
+            _ha = self.query('SELECT hypothesis_id, employee_id FROM hypothesis_assignees')
+            _ha_map = {}
+            for a in _ha:
+                _ha_map.setdefault(a['hypothesis_id'], []).append(a['employee_id'])
+            for h in hypotheses:
+                h['assignees'] = _ha_map.get(h['id'], [])
+            jobs = [dict(r) for r in self.query(
+                'SELECT * FROM task_jobs ORDER BY hypothesis_id, sort_order, id')]
+            _ja = self.query('SELECT job_id, employee_id FROM job_assignees')
+            _ja_map = {}
+            for a in _ja:
+                _ja_map.setdefault(a['job_id'], []).append(a['employee_id'])
+            for j in jobs:
+                j['assignees'] = _ja_map.get(j['id'], [])
+        except Exception as _he:
+            print(f'[DB] hierarchy load skip: {_he}')
+            hypotheses, jobs = [], []
+        hyp_by_task = {}
+        for h in hypotheses:
+            hyp_by_task.setdefault(h['task_id'], []).append(h)
+        jobs_by_hyp = {}
+        for j in jobs:
+            jobs_by_hyp.setdefault(j['hypothesis_id'], []).append(j)
+        for t in tasks:
+            ths = hyp_by_task.get(t['id'], [])
+            for h in ths:
+                h['jobs'] = jobs_by_hyp.get(h['id'], [])
+            t['hypotheses'] = ths
+
         return {
             'departments': departments,
             'teams': teams,
@@ -274,6 +309,8 @@ class TrackerDB:
             'tasks': tasks,
             'log': logs,
             'holidays': holidays,
+            'hypotheses': hypotheses,
+            'jobs': jobs,
         }
 
     # ---------------- employees ----------------
@@ -464,22 +501,98 @@ class TrackerDB:
         if log_id:
             self.exec(
                 'UPDATE work_logs SET employee_id=?, task_id=?, date=?, hours=?, comment=?, '
-                'status=?, link=?, extra_data_json=?, orders_json=?, links_json=?, updated_at=? WHERE id=?',
+                'status=?, link=?, extra_data_json=?, orders_json=?, links_json=?, '
+                'hypothesis_id=?, job_id=?, updated_at=? WHERE id=?',
                 (payload['employee_id'], payload['task_id'], payload['date'], payload['hours'],
                  payload['comment'], payload['status'], payload['link'],
-                 _edj, _odj, _lnj, now, log_id))
+                 _edj, _odj, _lnj,
+                 int(payload.get('hypothesis_id') or 0), int(payload.get('job_id') or 0),
+                 now, log_id))
             return False
         new_id = self.exec(
             'INSERT INTO work_logs (employee_id,task_id,date,hours,comment,status,link,'
-            'extra_data_json,orders_json,links_json,created_at) '
-            'VALUES (?,?,?,?,?,?,?,?,?,?,?)',
+            'extra_data_json,orders_json,links_json,hypothesis_id,job_id,created_at) '
+            'VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)',
             (payload['employee_id'], payload['task_id'], payload['date'], payload['hours'],
              payload['comment'], payload['status'], payload['link'],
-             _edj, _odj, _lnj, now))
+             _edj, _odj, _lnj,
+             int(payload.get('hypothesis_id') or 0), int(payload.get('job_id') or 0), now))
         return new_id
 
     def delete_log(self, log_id):
         self.exec('DELETE FROM work_logs WHERE id=?', (log_id,))
+
+    # ---------------- PATCH v1.2.0: иерархия Гипотезы / Задания ----------------
+    def save_hypothesis(self, hyp_id, task_id, payload):
+        """Создание/обновление гипотезы. Возвращает id."""
+        now = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+        with self.transaction() as tx:
+            if hyp_id:
+                tx.exec(
+                    'UPDATE task_hypotheses SET task_id=?, name=?, formulation=?, start_date=?, '
+                    'deadline=?, status=?, color=?, sort_order=? WHERE id=?',
+                    (task_id, payload['name'], payload.get('formulation', ''),
+                     payload.get('start_date', ''), payload.get('deadline', ''),
+                     payload.get('status', 'active'), payload.get('color', ''),
+                     int(payload.get('sort_order') or 0), hyp_id))
+                _id = hyp_id
+            else:
+                _cur = tx.exec(
+                    'INSERT INTO task_hypotheses (task_id,name,formulation,start_date,deadline,'
+                    'status,color,sort_order,created_at) VALUES (?,?,?,?,?,?,?,?,?)',
+                    (task_id, payload['name'], payload.get('formulation', ''),
+                     payload.get('start_date', ''), payload.get('deadline', ''),
+                     payload.get('status', 'active'), payload.get('color', ''),
+                     int(payload.get('sort_order') or 0), now))
+                _id = _cur.lastrowid
+            tx.exec('DELETE FROM hypothesis_assignees WHERE hypothesis_id=?', (_id,))
+            for e in (payload.get('assignees') or []):
+                tx.exec('INSERT OR IGNORE INTO hypothesis_assignees (hypothesis_id,employee_id) VALUES (?,?)',
+                        (_id, e))
+        return _id
+
+    def delete_hypothesis(self, hyp_id, drop_jobs=True):
+        with self.transaction() as tx:
+            if drop_jobs:
+                job_ids = [r['id'] for r in self.query(
+                    'SELECT id FROM task_jobs WHERE hypothesis_id=?', (hyp_id,))]
+                for jid in job_ids:
+                    tx.exec('DELETE FROM job_assignees WHERE job_id=?', (jid,))
+                tx.exec('DELETE FROM task_jobs WHERE hypothesis_id=?', (hyp_id,))
+            tx.exec('DELETE FROM hypothesis_assignees WHERE hypothesis_id=?', (hyp_id,))
+            tx.exec('DELETE FROM task_hypotheses WHERE id=?', (hyp_id,))
+
+    def save_job(self, job_id, hypothesis_id, payload):
+        now = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+        with self.transaction() as tx:
+            if job_id:
+                tx.exec(
+                    'UPDATE task_jobs SET hypothesis_id=?, name=?, description=?, start_date=?, '
+                    'deadline=?, status=?, sort_order=? WHERE id=?',
+                    (hypothesis_id, payload['name'], payload.get('description', ''),
+                     payload.get('start_date', ''), payload.get('deadline', ''),
+                     payload.get('status', 'active'),
+                     int(payload.get('sort_order') or 0), job_id))
+                _id = job_id
+            else:
+                _cur = tx.exec(
+                    'INSERT INTO task_jobs (hypothesis_id,name,description,start_date,deadline,'
+                    'status,sort_order,created_at) VALUES (?,?,?,?,?,?,?,?)',
+                    (hypothesis_id, payload['name'], payload.get('description', ''),
+                     payload.get('start_date', ''), payload.get('deadline', ''),
+                     payload.get('status', 'active'),
+                     int(payload.get('sort_order') or 0), now))
+                _id = _cur.lastrowid
+            tx.exec('DELETE FROM job_assignees WHERE job_id=?', (_id,))
+            for e in (payload.get('assignees') or []):
+                tx.exec('INSERT OR IGNORE INTO job_assignees (job_id,employee_id) VALUES (?,?)',
+                        (_id, e))
+        return _id
+
+    def delete_job(self, job_id):
+        with self.transaction() as tx:
+            tx.exec('DELETE FROM job_assignees WHERE job_id=?', (job_id,))
+            tx.exec('DELETE FROM task_jobs WHERE id=?', (job_id,))
 
     def copy_day_logs(self, src, dst, emp_filter):
         rows = self.query(
