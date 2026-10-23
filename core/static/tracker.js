@@ -15090,8 +15090,9 @@ setTimeout(function(){
                         .map(function(x){ return { description: (x.description||'').trim(), url: (x.url||'').trim() }; })
                     : []);
                 if (!_body.description && _body.comment) _body.description = _body.comment;
-                // Флаг: пусть бэкенд сольёт данные с задачей даже для правки
-                _body.merge_into_task = 1;
+                // PATCH v1.1.2: НЕ шлём merge_into_task при правке отметки —
+                // бэкенд получал объединённые task+entry списки и сливал
+                // их повторно (множественное вложение ссылок/приказов).
             }
             _opts = Object.assign({}, opts, { body: JSON.stringify(_body) });
         } catch(e) {}
@@ -16957,8 +16958,9 @@ window.fetch = function(url, opts){
         if (extra.length) body.extra_data = extra;
         if (orders.length) body.orders = orders;
         if (links.length) body.links = links;
-        // Всегда просим merge в задачу
-        body.merge_into_task = 1;
+        // PATCH v1.1.2: merge в задачу просим только при СОЗДАНИИ отметки,
+        // при правке — нет (см. фикс множественного вложения)
+        if (!body.id) body.merge_into_task = 1;
         // Описание из textarea (на случай, если saveLog его не собрал)
         var ta = document.getElementById('log_comment');
         if (ta && !body.comment) body.comment = (ta.value || '').trim();
@@ -16974,6 +16976,19 @@ window.__trkCollectLogMultiFields = function(){
     return { extra: _collectExtra(), orders: _collectOrders(), links: _collectLinks() };
 };
 
+})();
+
+/* PATCH v1.1.2: чистимостатки DOM-ссылки на удалённое поле «Доп. данные»
+   в модалке отметки (кнопка ➕ и лист больше не нужны). */
+(function(){
+    function _cleanExtraDom(){
+        var box = document.getElementById('logExtraDataList');
+        if (box && box.parentNode) box.parentNode.remove();
+        var btn = document.getElementById('logExtraAddBtn');
+        if (btn && btn.parentNode) btn.parentNode.remove();
+    }
+    if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', _cleanExtraDom);
+    else _cleanExtraDom();
 })();
 
 /* ============================================================
@@ -17036,7 +17051,8 @@ function _enrichBody(body){
         if (!body.comment) body.comment = (ta.value || '').trim();
         if (!body.description) body.description = (ta.value || '').trim();
     }
-    body.merge_into_task = 1;
+    // PATCH v1.1.2: merge только при создании новой отметки
+    if (!body.id) body.merge_into_task = 1;
     return body;
 }
 function _getOverflowModal(){
@@ -19014,4 +19030,41 @@ function boot(){
 
 if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', boot);
 else boot();
+})();
+
+/* ============================================================
+   PATCH v1.1.2 (tile): из расширенного режима карточки ЗАДАЧИ
+   (Плитка) убираем блок «Дополнительные данные»; остаётся только
+   📄 Приказы и 🔗 Ссылки.
+   ============================================================ */
+(function(){
+'use strict';
+if (window.__trkTileHideExtraV112) return;
+window.__trkTileHideExtraV112 = true;
+function hide(){
+    var list = document.getElementById('tasksFullList');
+    if (!list) return;
+    list.querySelectorAll('.tfl-sec').forEach(function(sec){
+        var head = sec.querySelector('.tfl-head');
+        if (head && head.textContent.indexOf('Дополнительные данные') !== -1) sec.remove();
+    });
+    list.querySelectorAll('.txi-fold').forEach(function(el){ el.remove(); });
+}
+var _mo = null;
+function boot(){
+    hide();
+    var list = document.getElementById('tasksFullList');
+    if (list && !_mo && window.MutationObserver){
+        _mo = new MutationObserver(function(){ setTimeout(hide, 30); });
+        _mo.observe(list, { childList: true, subtree: true });
+    }
+}
+if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', boot);
+else boot();
+setTimeout(boot, 600);
+setTimeout(boot, 2000);
+setInterval(function(){
+    var p = document.getElementById('panel-tasks');
+    if (p && p.classList.contains('active')) hide();
+}, 2000);
 })();
