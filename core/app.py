@@ -2191,12 +2191,14 @@ def create_app():
                 _notify_task_done(db, task_id, employee_id, u)
             except Exception as _e:
                 print(f'[notify] hook failed: {_e}')
-        # PATCH v1.0.4 + v1.0.15: при создании или правке отметки — пушим данные в задачу
+        # PATCH v1.1.2: merge в задачу — только если клиент явно прислал
+        # merge_into_task И непустые multi-поля (иначе каскад fetch-обёрток
+        # пересылал объединённые task+entry списки и бэкенд сливал их снова,
+        # порождая многократное вложение ссылок/приказов).
         _merge_into_task = bool(body.get('merge_into_task'))
         _merge_info = None
-        # PATCH v1.0.19: при обновлении отметки тоже сливаем (построчно),
-        # чтобы добавленные строки описания/приказов/ссылок попадали в задачу.
-        if task_id:
+        _has_merge_payload = bool(extra_data or orders or links) or bool((comment or '').strip())
+        if task_id and _merge_into_task and _has_merge_payload:
             try:
                 _merge_info = _merge_log_data_into_task(
                     db, task_id, employee_id, u,
@@ -2211,6 +2213,7 @@ def create_app():
         if _merge_info:
             _resp['merge_info'] = _merge_info
         return jsonify(_resp)
+
 
     @app.route('/api/tracker/log/delete', methods=['POST'])
     @login_required
