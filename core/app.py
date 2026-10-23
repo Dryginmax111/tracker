@@ -20,7 +20,7 @@ from flask import (Flask, render_template, request, jsonify, session,
 from db import TrackerDB
 from auth import (PERMISSION_GROUPS, ALL_PERMISSIONS, DEFAULT_USER_PERMISSIONS,
                   user_has, effective_permissions,
-                  hash_kody, verify_kody,
+                  hash_password, verify_password,
                   login_user, logout_user, current_user, ensure_csrf, check_csrf,
                   login_required, permission_required)
 from plugins_loader import load_plugins, HookRegistry
@@ -962,9 +962,9 @@ def create_app():
 
     if not db.users_list():
         admin_pwd = secrets.token_urlsafe(10)
-        # PATCH v2: hash_kody (кириллица)
+        # PATCH v2: hash_password (кириллица)
         uid = db.user_create(
-            'admin', hash_kody(admin_pwd), 'admin', 'Администратор', ''
+            'admin', hash_password(admin_pwd), 'admin', 'Администратор', ''
         )
         db.user_permissions_set(uid, {k: True for k in ALL_PERMISSIONS})
         print('=' * 60)
@@ -1107,7 +1107,7 @@ def create_app():
     def _active_users_for_login():
         users = [u for u in db.users_list() if u.get('is_active')]
         for u in users:
-            u.pop('kody_hash', None)
+            u.pop('password_hash', None)
         users.sort(key=lambda x: (x.get('display_name') or x['username']).lower())
         return users
 
@@ -1128,11 +1128,11 @@ def create_app():
 
         data = request.form or {}
         username = (data.get('username') or '').strip()
-        # PATCH v2: кириллица — форма отдаёт name="kody", но внутренняя переменная наша
-        kody = data.get('kody') or ''
+        # PATCH v2: кириллица — форма отдаёт name="password", но внутренняя переменная наша
+        password = data.get('password') or ''
         u = db.user_get_by_name(username)
-        # PATCH v2: verify_kody (кириллица)
-        if not u or not u.get('is_active') or not verify_kody(u['kody_hash'], kody):
+        # PATCH v2: verify_password (кириллица)
+        if not u or not u.get('is_active') or not verify_password(u['password_hash'], password):
             return render_template(
                 'login.html',
                 error='Неверный логин или пароль',
@@ -1280,9 +1280,9 @@ def create_app():
                 while db.user_get_by_name(uname):
                     i += 1
                     uname = f'{base}_{i}'
-                # PATCH v2: hash_kody (кириллица)
+                # PATCH v2: hash_password (кириллица)
                 new_uid = db.user_create(
-                    uname, hash_kody('123456'), 'user', name, emp_id
+                    uname, hash_password('123456'), 'user', name, emp_id
                 )
                 db.user_permissions_set(
                     new_uid, {k: True for k in DEFAULT_USER_PERMISSIONS}
@@ -4034,8 +4034,8 @@ def create_app():
         body = request.get_json() or {}
         uid = body.get('id')
         username = str(body.get('username', '')).strip()
-        # PATCH v2: кириллица — settings.js отправляет 'kody'
-        kody = body.get('kody') or ''
+        # PATCH v2: кириллица — settings.js отправляет 'password'
+        password = body.get('password') or ''
         role = body.get('role', 'user')
         if role not in ('user', 'admin'):
             role = 'user'
@@ -4054,7 +4054,7 @@ def create_app():
 
         if not uid and not username:
             return jsonify({'success': False, 'error': 'Логин обязателен'}), 400
-        if not uid and not kody:
+        if not uid and not password:
             return jsonify({'success': False, 'error': 'Пароль обязателен'}), 400
 
         existing = db.user_get_by_name(username) if username else None
@@ -4065,15 +4065,15 @@ def create_app():
             target = db.user_get(uid)
             if not target:
                 return jsonify({'success': False, 'error': 'Пользователь не найден'}), 404
-            # PATCH v2: hash_kody (кириллица)
-            pwd_hash = hash_kody(kody) if kody else None
+            # PATCH v2: hash_password (кириллица)
+            pwd_hash = hash_password(password) if password else None
             db.user_update(uid, role, display_name, employee_id, is_active, pwd_hash=pwd_hash)
             _audit(db, u, 'update', 'user', uid,
                    {'username': username, 'role': role})
         else:
-            # PATCH v2: hash_kody (кириллица)
+            # PATCH v2: hash_password (кириллица)
             uid = db.user_create(
-                username, hash_kody(kody), role, display_name, employee_id
+                username, hash_password(password), role, display_name, employee_id
             )
             _audit(db, u, 'create', 'user', uid,
                    {'username': username, 'role': role})
@@ -4110,24 +4110,24 @@ def create_app():
         return jsonify({'success': True})
 
     # PATCH v2: URL роутов оставлен кириллицей — settings.js отправляет
-    # fetch('/api/settings/kody', {old_kody, new_kody})
-    @app.route('/api/settings/kody', methods=['POST'])
+    # fetch('/api/settings/password', {old_password, new_password})
+    @app.route('/api/settings/password', methods=['POST'])
     @login_required
-    def api_change_kody():
+    def api_change_password():
         u = current_user(db)
         body = request.get_json() or {}
-        old = body.get('old_kody') or ''
-        new = body.get('new_kody') or ''
+        old = body.get('old_password') or ''
+        new = body.get('new_password') or ''
         if len(new) < 6:
             return jsonify({'success': False, 'error': 'Пароль минимум 6 символов'}), 400
-        # PATCH v2: verify_kody / hash_kody (кириллица), поле kody_hash латиница
-        if not verify_kody(u['kody_hash'], old):
+        # PATCH v2: verify_password / hash_password (кириллица), поле password_hash латиница
+        if not verify_password(u['password_hash'], old):
             return jsonify({'success': False, 'error': 'Неверный текущий пароль'}), 400
         db.user_update(
             u['id'], u['role'], u.get('display_name', ''),
-            u.get('employee_id', ''), True, pwd_hash=hash_kody(new)
+            u.get('employee_id', ''), True, pwd_hash=hash_password(new)
         )
-        _audit(db, u, 'update', 'user', u['id'], {'kody_changed': True})
+        _audit(db, u, 'update', 'user', u['id'], {'password_changed': True})
         return jsonify({'success': True})
 
     @app.route('/api/settings/db_info', methods=['GET'])

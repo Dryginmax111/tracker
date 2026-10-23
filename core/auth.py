@@ -1,14 +1,14 @@
 """Пользователи, сессии, права.
 
 PATCH v2: возвращены кириллические имена функций-хэширования 
-(hash_пассворд, verify_kody) — они были умышленно обфусцированы 
+(hash_пассворд, verify_password) — они были умышленно обфусцированы 
 для внутренней сети. Схема БД при этом использует латиницу 
-`kody_hash` — это исторически сложилось, менять без миграции нельзя.
+`password_hash` — это исторически сложилось, менять без миграции нельзя.
 """
 import secrets
 from functools import wraps
 from flask import session, redirect, url_for, jsonify, request, g
-from werkzeug.security import generate_kody_hash, check_kody_hash
+from werkzeug.security import generate_password_hash, check_password_hash
 
 
 PERMISSION_GROUPS = [
@@ -138,21 +138,21 @@ def effective_permissions(db, user):
 
 
 # PATCH v2: имена функций возвращены к кириллице, как было в оригинале.
-def hash_kody(pwd):
-    return generate_kody_hash(pwd, method='pbkdf2:sha256:150000')
+def hash_password(pwd):
+    return generate_password_hash(pwd, method='pbkdf2:sha256:150000')
 
 
-def verify_kody(pwd_hash, pwd):
+def verify_password(pwd_hash, pwd):
     try:
-        return check_kody_hash(pwd_hash, pwd)
+        return check_password_hash(pwd_hash, pwd)
     except Exception:
         return False
 
 
 # PATCH v2: алиасы для совместимости — если где-то остался старый вызов,
 # он не упадёт. Постепенно можно удалить.
-hash_kody = hash_kody
-verify_kody = verify_kody
+hash_password = hash_password
+verify_password = verify_password
 
 
 def login_user(uid):

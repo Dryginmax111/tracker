@@ -528,7 +528,7 @@ class TrackerDB:
         now = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
         # PATCH: литерал "" -> параметр '' (единый стиль, легче читать)
         return self.exec(
-            'INSERT INTO users (username,kody_hash,role,display_name,employee_id,is_active,'
+            'INSERT INTO users (username,password_hash,role,display_name,employee_id,is_active,'
             'created_at,last_login) VALUES (?,?,?,?,?,1,?,?)',
             (username, pwd_hash, role, display_name, employee_id, now, ''))
 
@@ -536,7 +536,7 @@ class TrackerDB:
         if pwd_hash:
             self.exec(
                 'UPDATE users SET role=?, display_name=?, employee_id=?, is_active=?, '
-                'kody_hash=? WHERE id=?',
+                'password_hash=? WHERE id=?',
                 (role, display_name, employee_id, 1 if is_active else 0, pwd_hash, uid))
         else:
             self.exec(
