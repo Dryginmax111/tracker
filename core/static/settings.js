@@ -74,6 +74,8 @@ function loadUsers(){
         state.users = d.users || [];
         state.permission_groups = d.permission_groups || [];
         state.default_user = d.default_user || [];
+        // PATCH v1.1.9: шаблоны уровня доступа
+        state.perm_presets = d.perm_presets || [];
         state.current_user_id = d.current_user_id;
         state.is_admin = !!d.is_admin;
         state.loaded = true;
@@ -148,6 +150,34 @@ function renderPermsTree(selected){
     tree.innerHTML = html;
 }
 
+// PATCH v1.1.9: применение шаблона уровня доступа к дереву прав + селект пресетов
+function applyPermPreset(key){
+    var preset = (state.perm_presets || []).find(function(p){ return p.key === key; });
+    if (!preset) return;
+    var perms = {};
+    (preset.perms || []).forEach(function(k){ perms[k] = true; });
+    renderPermsTree(perms);
+    var hint = $('permPresetHint');
+    if (hint) hint.textContent = preset.hint || '';
+}
+
+function renderPresetSelect(){
+    var sel = $('user_perm_preset'); if (!sel) return;
+    var h = '<option value="custom">— без шаблона (ручные права) —</option>';
+    (state.perm_presets || []).forEach(function(p){
+        h += '<option value="' + esc(p.key) + '">' + esc(p.name) + '</option>';
+    });
+    sel.innerHTML = h;
+    sel.value = 'user';
+}
+
+if ($('user_perm_preset')) {
+    $('user_perm_preset').addEventListener('change', function(){
+        if (this.value && this.value !== 'custom') applyPermPreset(this.value);
+        else { var hint = $('permPresetHint'); if (hint) hint.textContent = ''; }
+    });
+}
+
 function openUserModal(u){
     u = u || null;
     $('userModalTitle').textContent = u ? ('Пользователь: ' + u.username) : 'Новый пользователь';
@@ -171,6 +201,12 @@ function openUserModal(u){
     sel.value = u ? (u.employee_id || '') : '';
 
     renderPermsTree(u ? u.permissions : {});
+    // PATCH v1.1.9: селект шаблонов — только для новых пользователей
+    renderPresetSelect();
+    var presetWrap = $('permPresetWrap');
+    if (presetWrap) presetWrap.style.display = u ? 'none' : '';
+    var hintEl = $('permPresetHint');
+    if (hintEl) hintEl.textContent = '';
     syncRoleUI();
     $('userModal').classList.add('active');
 }
@@ -200,6 +236,8 @@ function saveUser(){
         employee_id: $('user_employee').value || '',
         is_active: $('user_is_active').checked,
         permissions: collectPerms(),
+        // PATCH v1.1.9: шаблон уровня доступа для новых пользователей
+        perm_preset: (!$('user_id').value && $('user_perm_preset')) ? $('user_perm_preset').value : 'custom',
     };
     if (!payload.username) { notify('❌ Укажите логин', 'error'); return; }
     if (!payload.id && !payload.password) { notify('❌ Укажите пароль для нового пользователя', 'error'); return; }
@@ -1328,34 +1366,55 @@ document.addEventListener('click', function(e){
 });
 
 /* ============================================================
-   v1.1.4: светлая тема в админ-панели.
-   Тот же ключ localStorage ('reestr_tracker_theme'), что у трекера,
-   поэтому выбор темы синхронен между страницами. Класс вешается на
-   documentElement (inline-скрипт в settings.html делает это до рендера)
-   и на body — ради существующих селекторов body.trk-theme-light.
+   v1.1.9: светлая тема в админ-панели (переписано).
+   Прежняя версия ломалась по двум причинам:
+     1) inline-скрипт в settings.html вешал класс trk-theme-light только
+        на <html>, а все правила темы написаны как body.trk-theme-light —
+        тема применялась «клочками» (только .trk-theme-light-селекторы);
+     2) обработчик кнопки был завязан на DOMContentLoaded — при ошибке
+        загрузки скрипта кнопка вообще не работала.
+   Теперь: единый apply() вешает класс одновременно на html и body,
+   читает тот же ключ localStorage, что и трекер ('reestr_tracker_theme'),
+   кнопка подключается сразу (script в конце body) + страховка на DOMContentLoaded.
    ============================================================ */
 (function(){
-    function apply(theme){
-        if (!document.body) { setTimeout(function(){ apply(theme); }, 30); return; }
+    var THEME_KEY = 'reestr_tracker_theme';
+    function getSaved(){
+        try { return localStorage.getItem(THEME_KEY) || 'dark'; } catch(e){ return 'dark'; }
+    }
+    window._trkApplySettingsTheme = function(theme){
         var light = (theme === 'light');
-        document.documentElement.classList.toggle('trk-theme-light', light);
-        document.body.classList.toggle('trk-theme-light', light);
+        // html+body — чтобы работали и body.trk-theme-light, и .trk-theme-light селекторы;
+        // color-scheme тоже переключается (правило объявлено внутри блока переменных light)
+        var root = document.documentElement;
+        root.classList.toggle('trk-theme-light', light);
+        if (window.CSS && CSS.supports && CSS.supports('color-scheme','light')) {
+            root.style.colorScheme = light ? 'light' : 'dark';
+        }
+        if (document.body) document.body.classList.toggle('trk-theme-light', light);
         var icon = document.getElementById('setThemeIcon');
         var label = document.getElementById('setThemeLabel');
         if (icon) icon.textContent = light ? '🌙' : '☀️';
         if (label) label.textContent = light ? 'Тёмная' : 'Светлая';
+    };
+    function wireBtn(){
+        var btn = document.getElementById('setThemeToggle');
+        if (!btn || btn.dataset.themeWired) return;
+        btn.dataset.themeWired = '1';
+        btn.addEventListener('click', function(){
+            var next = (getSaved() === 'light') ? 'dark' : 'light';
+            try { localStorage.setItem(THEME_KEY, next); } catch(e){}
+            window._trkApplySettingsTheme(next);
+        });
     }
-    var saved = 'dark';
-    try { saved = localStorage.getItem('reestr_tracker_theme') || 'dark'; } catch(e){}
-    apply(saved);
-    var btn = document.getElementById('setThemeToggle');
-    if (btn) btn.addEventListener('click', function(){
-        var cur = 'dark';
-        try { cur = localStorage.getItem('reestr_tracker_theme') || 'dark'; } catch(e){}
-        var next = (cur === 'light') ? 'dark' : 'light';
-        try { localStorage.setItem('reestr_tracker_theme', next); } catch(e){}
-        apply(next);
-    });
+    window._trkApplySettingsTheme(getSaved());
+    wireBtn();
+    if (!document.getElementById('setThemeToggle')) {
+        document.addEventListener('DOMContentLoaded', function(){
+            window._trkApplySettingsTheme(getSaved());
+            wireBtn();
+        });
+    }
 })();
 
 function boot(){ setTimeout(function(){ _wire(); _load(); }, 300); }

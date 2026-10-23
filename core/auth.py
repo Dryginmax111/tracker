@@ -111,6 +111,64 @@ DEFAULT_USER_PERMISSIONS = {
 # v1.1.8: «Отчёт за день» доступен всем активным пользователям (см. также PERMISSION_GROUPS)
 DEFAULT_USER_PERMISSIONS.add('plugin.daily_report.use')
 
+# PATCH v1.1.9: шаблоны уровня доступа для новых пользователей.
+# Используются при создании пользователя в админке, при автосоздании учётки
+# из карточки сотрудника и при импорте отпусков из Excel.
+PERM_PRESETS = [
+    {
+        'key': 'observer',
+        'name': '👁 Наблюдатель',
+        'hint': 'Просмотр календаря и статистики без права отмечать работу',
+        'perms': {'tab.calendar', 'tab.updater', 'block.calendar.dept_filter',
+                  'block.calendar.team_filter', 'block.calendar.employee_filter',
+                  'block.calendar.other_employees', 'block.stats.other_employees',
+                  'plugin.my_profile.use'},
+    },
+    {
+        'key': 'user',
+        'name': '👤 Пользователь',
+        'hint': 'Стандартный набор: свои отметки, задачи не создаёт',
+        'perms': set(DEFAULT_USER_PERMISSIONS),
+    },
+    {
+        'key': 'employee_full',
+        'name': '🧑‍💼 Сотрудник с задачами',
+        'hint': 'Пользователь + создание/редактирование задач и справочников',
+        'perms': set(DEFAULT_USER_PERMISSIONS) | {
+            'action.task.create', 'action.task.edit',
+            'tab.tasks', 'tab.dicts',
+            'block.dicts.employees', 'block.dicts.departments', 'block.dicts.teams',
+            'block.dicts.tasks',
+        },
+    },
+    {
+        'key': 'lead',
+        'name': '⭐ Руководитель',
+        'hint': 'Сотрудник с задачами + чужие отметки, отпуска, удаление задач',
+        'perms': set(DEFAULT_USER_PERMISSIONS) | {
+            'action.task.create', 'action.task.edit', 'action.task.delete',
+            'tab.tasks', 'tab.dicts',
+            'block.dicts.employees', 'block.dicts.departments', 'block.dicts.teams',
+            'block.dicts.tasks',
+            'action.log.edit.any', 'action.log.delete.any',
+            'action.employee.edit', 'action.employee.vacation.edit',
+            'block.summary.full_view', 'block.summary.other_employees',
+            'block.stats.overdue',
+        },
+    },
+]
+PRESET_KEYS = {p['key'] for p in PERM_PRESETS}
+
+
+def permissions_for_preset(preset_key):
+    """Права по шаблону; неизвестный ключ -> стандартный пользователь."""
+    if preset_key == 'admin':
+        return set(ALL_PERMISSIONS)
+    for p in PERM_PRESETS:
+        if p['key'] == preset_key:
+            return set(p['perms'])
+    return set(DEFAULT_USER_PERMISSIONS)
+
 
 def default_permissions_for(role):
     if role == 'admin':

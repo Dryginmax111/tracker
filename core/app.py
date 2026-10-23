@@ -19,6 +19,7 @@ from flask import (Flask, render_template, request, jsonify, session,
 
 from db import TrackerDB
 from auth import (PERMISSION_GROUPS, ALL_PERMISSIONS, DEFAULT_USER_PERMISSIONS,
+                  PERM_PRESETS, PRESET_KEYS, permissions_for_preset,
                   user_has, effective_permissions,
                   hash_password, verify_password,
                   login_user, logout_user, current_user, ensure_csrf, check_csrf,
@@ -1236,6 +1237,10 @@ def create_app():
         fired = bool(body.get('fired', False))
         fired_date = str(body.get('fired_date', '')).strip()[:20]
         hired_date = str(body.get('hired_date', '')).strip()[:20]
+        # PATCH v1.1.9: уровень доступа для автосоздаваемой учётки нового сотрудника
+        perm_preset = str(body.get('perm_preset', 'user') or 'user').strip()
+        if perm_preset not in PRESET_KEYS:
+            perm_preset = 'user'
         if fired_date and not _valid_date(fired_date):
             fired_date = ''
         if not fired:
@@ -1284,8 +1289,9 @@ def create_app():
                 new_uid = db.user_create(
                     uname, hash_password('123456'), 'user', name, emp_id
                 )
+                # PATCH v1.1.9: права по выбранному шаблону (по умолчанию — стандартный пользователь)
                 db.user_permissions_set(
-                    new_uid, {k: True for k in DEFAULT_USER_PERMISSIONS}
+                    new_uid, {k: True for k in permissions_for_preset(perm_preset)}
                 )
                 _audit(db, u, 'create', 'user', new_uid, {'username': uname, 'auto': True})
         except Exception as e:
@@ -4065,6 +4071,12 @@ def create_app():
                 'items': [{'key': k, 'label': v} for k, v in g['items']],
             } for g in PERMISSION_GROUPS],
             'default_user': sorted(DEFAULT_USER_PERMISSIONS),
+            # PATCH v1.1.9: шаблоны уровня доступа для новых пользователей
+            'perm_presets': [
+                {'key': p['key'], 'name': p['name'], 'hint': p['hint'],
+                 'perms': sorted(p['perms'])}
+                for p in PERM_PRESETS
+            ],
             'current_user_id': u['id'],
             'is_admin': u['role'] == 'admin',
         })
@@ -4089,6 +4101,12 @@ def create_app():
         perms = body.get('permissions') or {}
         if not isinstance(perms, dict):
             perms = {}
+        # PATCH v1.1.9: шаблон уровня доступа (perm_preset) — применяется при
+        # создании нового пользователя; если присланы и точные permissions,
+        # они накладываются поверх шаблона.
+        perm_preset = str(body.get('perm_preset', '')).strip()
+        if perm_preset and perm_preset not in PRESET_KEYS and perm_preset != 'custom':
+            perm_preset = ''
 
         if uid:
             try:
@@ -4125,8 +4143,9 @@ def create_app():
         if role == 'admin':
             db.user_permissions_set(uid, {k: True for k in ALL_PERMISSIONS})
         else:
-            clean = {k: bool(perms.get(k, k in DEFAULT_USER_PERMISSIONS))
-                     for k in ALL_PERMISSIONS}
+            # PATCH v1.1.9: база шаблона + точные права поверх (если присланы)
+            base = permissions_for_preset(perm_preset) if perm_preset else set(DEFAULT_USER_PERMISSIONS)
+            clean = {k: bool(perms.get(k, k in base)) for k in ALL_PERMISSIONS}
             db.user_permissions_set(uid, clean)
         return jsonify({'success': True, 'id': uid})
 

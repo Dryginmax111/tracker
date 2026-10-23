@@ -2497,6 +2497,8 @@ function openEmployeeModal(emp) {
         d.classList.toggle('active', d.getAttribute('data-color') === color);
     });
     var vs = $('vacSection'); if (vs) vs.style.display = emp ? '' : 'none';
+    // PATCH v1.1.9: селект уровня доступа — только для нового сотрудника
+    var epw = $('empPresetWrap'); if (epw) epw.style.display = emp ? 'none' : '';
     _vacEditId = null; // v1.1.6: сброс режима редактирования периода
     renderVacations(emp);
     g('vac_from', ''); g('vac_to', ''); g('vac_comment', '');
@@ -2611,6 +2613,8 @@ function saveEmployee() {
         fired: fired,
         fired_date: fired ? firedDate : '',
         hired_date: $('emp_hired_date') ? ($('emp_hired_date').value || '') : '',
+        // PATCH v1.1.9: уровень доступа автосоздаваемой учётки (для нового сотрудника)
+        perm_preset: (!$('emp_id') || !$('emp_id').value) ? (($('emp_perm_preset') && $('emp_perm_preset').value) || 'user') : 'user',
     };
     apiJson('/api/tracker/employee/save', {
         method: 'POST', headers: {'Content-Type': 'application/json'},
@@ -6261,11 +6265,50 @@ loadState().then(function() {
         obs.observe(m, { attributes: true, attributeFilter: ['class'] });
     }
 
+    // PATCH v1.1.9: гарантированно обновлять список должностей после каждой
+    // загрузки данных (state.employees меняется в loadState) — иначе после
+    // создания сотрудника с новой должностью datalist оставался устаревшим.
+    function hookReloads() {
+        if (window.__trkFillRoleDatalist) { /* noop */ }
+        ['focus', 'click'].forEach(function(ev) {
+            document.addEventListener(ev, function(e) {
+                try {
+                    var t = e.target;
+                    if (t && t.closest && (t.closest('#emp_role') || t.closest('#addEmployeeBtn'))) {
+                        fillRoleDatalist();
+                    }
+                } catch (x) {}
+            }, true);
+        });
+    }
+
     function boot() {
         attachObserver();
+        hookReloads();
         setTimeout(fillRoleDatalist, 800);
         setTimeout(fillRoleDatalist, 2000);
     }
+
+    // PATCH v1.1.9: обновлять datalist после каждой загрузки/обновления данных
+    // (state.employees перезаписывается в loadState — обёртываем её один раз).
+    (function wrapLoadState() {
+        try {
+            if (typeof window.loadState === 'function' && !window.loadState.__roleWrap) {
+                var _orig = window.loadState;
+                var wrapped = function() {
+                    var p = _orig.apply(this, arguments);
+                    try {
+                        if (p && typeof p.then === 'function') {
+                            p.then(function() { setTimeout(fillRoleDatalist, 50); }, function(){});
+                        }
+                    } catch (x) {}
+                    return p;
+                };
+                wrapped.__roleWrap = true;
+                window.loadState = wrapped;
+            }
+        } catch (x) {}
+    })();
 
     if (document.readyState === 'loading') {
         document.addEventListener('DOMContentLoaded', boot);

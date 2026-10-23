@@ -356,6 +356,8 @@ body{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Arial,sans-s
       <div class="import-row">
         <label style="font-size:.75rem;color:var(--pg-meta);display:inline-flex;align-items:center;gap:6px;">При пересечении: <select id="impStrategy" style="padding:5px 8px;border-radius:6px;border:1px solid var(--pg-input-border);background:var(--pg-input-bg);color:var(--pg-text);font-family:inherit;font-size:.8rem;"><option value="ignore">пропустить</option><option value="replace">заменить</option><option value="skip_duplicates">только дубли</option><option value="fail">отменить</option></select></label>
         <label style="font-size:.75rem;color:var(--pg-meta);display:inline-flex;align-items:center;gap:6px;">Год: <input type="number" id="impYear" min="2000" max="2100" step="1" style="width:80px;padding:5px 8px;border-radius:6px;border:1px solid var(--pg-input-border);background:var(--pg-input-bg);color:var(--pg-text);font-family:inherit;font-size:.8rem;"></label>
+        {# PATCH v1.1.9: уровень доступа для учёток, создаваемых при импорте #}
+        <label style="font-size:.75rem;color:var(--pg-meta);display:inline-flex;align-items:center;gap:6px;">Доступ новых учётных записей: <select id="impPermPreset" style="padding:5px 8px;border-radius:6px;border:1px solid var(--pg-input-border);background:var(--pg-input-bg);color:var(--pg-text);font-family:inherit;font-size:.8rem;"><option value="user">👤 Пользователь</option><option value="observer">👁 Наблюдатель</option><option value="employee_full">🧑‍💼 Сотрудник с задачами</option><option value="lead">⭐ Руководитель</option></select></label>
       </div>
       <div id="impPreviewBox"></div>
     </div>
@@ -898,6 +900,9 @@ document.getElementById('impApply').addEventListener('click',function(){
         var bad=addMissing.filter(function(x){return !x.department_id;});
         if(bad.length){impShow('Укажите отдел для каждого листа','err');return;}
         fd.append('add_missing','1');fd.append('new_employees',JSON.stringify(addMissing));
+    // PATCH v1.1.9: уровень доступа для создаваемых учётных записей
+    var _impPresetSel=document.getElementById('impPermPreset');
+    fd.append('perm_preset',(_impPresetSel&&_impPresetSel.value)||'user');
     }
     if(selectedFound.length)fd.append('selected_found',JSON.stringify(selectedFound));
     if(excludedLeads.length)fd.append('excluded_leads',JSON.stringify(excludedLeads));
@@ -1154,7 +1159,7 @@ def _slug_from_name(name):
     return (''.join(out).strip('_') or 'emp')[:32]
 
 
-def _create_employee_from_import(db, fio, role, dept_id, all_employees):
+def _create_employee_from_import(db, fio, role, dept_id, all_employees, perm_preset='user'):
     existing_ids = {e['id'] for e in (all_employees or [])}
     base = _slug_from_name(fio); emp_id = base; i = 1
     while emp_id in existing_ids:
@@ -1167,6 +1172,14 @@ def _create_employee_from_import(db, fio, role, dept_id, all_employees):
         existing_user = db.query_one('SELECT id FROM users WHERE employee_id=?', (emp_id,))
         if not existing_user:
             from auth import hash_password, DEFAULT_USER_PERMISSIONS
+            # PATCH v1.1.9: права по шаблону уровня доступа
+            try:
+                from auth import permissions_for_preset, PRESET_KEYS
+                if perm_preset not in PRESET_KEYS:
+                    perm_preset = 'user'
+                _preset_perms = permissions_for_preset(perm_preset)
+            except Exception:
+                _preset_perms = set(DEFAULT_USER_PERMISSIONS)
             _tr = {'а':'a','б':'b','в':'v','г':'g','д':'d','е':'e','ё':'e','ж':'zh','з':'z','и':'i','й':'y','к':'k','л':'l','м':'m','н':'n','о':'o','п':'p','р':'r','с':'s','т':'t','у':'u','ф':'f','х':'h','ц':'ts','ч':'ch','ш':'sh','щ':'sch','ъ':'','ы':'y','ь':'','э':'e','ю':'yu','я':'ya'}
             out = []
             for ch in str(fio or '').strip().lower():
@@ -1184,7 +1197,7 @@ def _create_employee_from_import(db, fio, role, dept_id, all_employees):
                 uname = f'{base_u}_{j}'
             new_uid = db.user_create(uname, hash_password('123456'), 'user', fio, emp_id)
             try:
-                db.user_permissions_set(new_uid, {k: True for k in DEFAULT_USER_PERMISSIONS})
+                db.user_permissions_set(new_uid, {k: True for k in _preset_perms})
             except Exception as _pe:
                 print(f'[import] permissions_set failed: {_pe}')
             print(f'[import] user created: {uname} / emp={emp_id}')
@@ -1748,6 +1761,14 @@ def register(app, db, hooks):
         strategy = (request.form.get('strategy') or 'ignore').strip()
         if strategy not in ('ignore', 'replace', 'skip_duplicates', 'fail'): strategy = 'ignore'
         add_missing = (request.form.get('add_missing') == '1')
+        # PATCH v1.1.9: шаблон уровня доступа для учёток, создаваемых при импорте
+        _imp_preset = str(request.form.get('perm_preset') or 'user').strip()
+        try:
+            from auth import PRESET_KEYS as _PK
+            if _imp_preset not in _PK:
+                _imp_preset = 'user'
+        except Exception:
+            _imp_preset = 'user'
         try:
             new_employees = _json.loads(request.form.get('new_employees') or '[]')
             if not isinstance(new_employees, list): new_employees = []
@@ -1858,7 +1879,7 @@ def register(app, db, hooks):
                     dept = dept_id_by_sheet.get(sn, '')
                     if not dept: continue
                     _role_new = (rec.get('role') or '').strip()[:50]
-                    eid_new, err_new = _create_employee_from_import(db, fio, _role_new, dept, data.get('employees', []))
+                    eid_new, err_new = _create_employee_from_import(db, fio, _role_new, dept, data.get('employees', []), _imp_preset)
                     if eid_new:
                         created_emps.append(eid_new)
                         created_map.setdefault(sn, {})[fio] = eid_new
