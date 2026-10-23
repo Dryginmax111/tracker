@@ -10467,3 +10467,72 @@ body.trk-theme-light .trk-ra-list { background: #ffffff; border-color: rgba(0,0,
 }
 
 #logModal #logExtraAddBtn { display: none !important; }
+
+/* ============================================================
+   v1.1.4: блоки вкладки «База данных» (админ-панель)
+   ============================================================ */
+.db-blocks {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(340px, 1fr));
+    gap: 14px;
+    align-items: start;
+}
+.db-block {
+    background: var(--trk-card-bg);
+    border: 1px solid var(--trk-card-border);
+    border-radius: 14px;
+    padding: 16px 18px 14px;
+    box-shadow: 0 2px 10px rgba(0,0,0,0.18);
+}
+.db-block-head {
+    font-size: .95rem;
+    font-weight: 800;
+    color: var(--trk-accent, #f5d76e);
+    padding-bottom: 10px;
+    margin-bottom: 12px;
+    border-bottom: 1px solid var(--trk-card-border);
+    letter-spacing: .3px;
+}
+.db-block .form-group:first-of-type { margin-top: 0; }
+@media (max-width: 760px) { .db-blocks { grid-template-columns: 1fr; } }
+
+/* ============================================================
+   v1.1.4: компактный список праздников (вкладка «Праздники»)
+   ============================================================ */
+.hol-chips { display: flex; flex-wrap: wrap; gap: 8px; }
+.hol-chip {
+    display: inline-flex; align-items: center; gap: 6px;
+    padding: 4px 12px; border-radius: 16px; font-size: .8rem;
+    background: var(--trk-card-bg); border: 1px solid var(--trk-card-border);
+    color: var(--trk-text); line-height: 1.5;
+}
+.hol-chip b { color: var(--trk-accent, #f5d76e); font-weight: 800; }
+.hol-chip-x {
+    border: none; background: transparent; cursor: pointer;
+    font-size: .8rem; padding: 0 2px; opacity: .55; color: inherit;
+}
+.hol-chip-x:hover { opacity: 1; }
+
+/* ============================================================
+   v1.1.4: светлая тема для админ-панели (страница /settings).
+   Требуемые CSS-переменные уже переопределены в body.trk-theme-light,
+   здесь — точечные правки теней/фонов специфичных классов настроек.
+   Класс также вешается на <html> (см. settings.js), поэтому селекторы
+   даны через .trk-theme-light без привязки к тегу.
+   ============================================================ */
+.trk-theme-light .settings-header {
+    background: rgba(255,255,255,0.85);
+    border-color: rgba(0,0,0,0.12);
+    box-shadow: 0 1px 2px rgba(0,0,0,0.05), 0 6px 16px rgba(0,0,0,0.07);
+}
+.trk-theme-light .settings-panel,
+.trk-theme-light .db-block { box-shadow: 0 1px 2px rgba(0,0,0,0.05), 0 4px 14px rgba(0,0,0,0.07); }
+.trk-theme-light .settings-tab { color: #455a64; }
+.trk-theme-light .settings-user {
+    background: #ffffff; border-color: rgba(0,0,0,0.10);
+}
+.trk-theme-light .hol-chip { background: #ffffff; border-color: rgba(0,0,0,0.12); }
+.trk-theme-light .pwd-form input {
+    background: #f5f5f5; color: #212121; border-color: rgba(0,0,0,0.22);
+}
+.trk-theme-light .audit-row, .trk-theme-light .perm-group { background: #fafafa; }

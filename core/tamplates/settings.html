@@ -1,9 +1,15 @@
 {% extends "base.html" %}
 {% block title %}Настройки — Трекер задач{% endblock %}
 {% block body %}
+{# v1.1.4: светлая тема применяется до первого кадра, чтобы не было вспышки тёмного #}
+<script>(function(){try{if((localStorage.getItem('reestr_tracker_theme')||'dark')==='light'){document.documentElement.classList.add('trk-theme-light');}}catch(e){}})();</script>
 <div class="settings-container">
     <div class="settings-header">
         <a href="{{ url_for('index') }}" class="tracker-back-btn">← К трекеру</a>
+        {# v1.1.4: переключатель темы (тот же ключ localStorage, что у трекера) #}
+        <button class="theme-toggle-btn" id="setThemeToggle" title="Переключить тему" type="button">
+            <span id="setThemeIcon">☀️</span><span id="setThemeLabel">Светлая</span>
+        </button>
         <div class="settings-title">🛠 Настройки</div>
         <div class="user-menu">
             <span class="user-chip"><span class="user-avatar">{{ (current_user.display_name or current_user.username)[:1]|upper }}</span>
@@ -48,8 +54,11 @@
         <div id="holidaysList" class="settings-users" style="margin-top:10px;"></div>
     </div>
 
+    {# v1.1.4: вкладка «База данных» разбита на карточки-блоки (CSS .db-blocks в app.css) #}
     <div class="settings-panel" id="sp-db">
-        <div class="settings-toolbar"><div class="dict-section-title">Расположение базы данных</div></div>
+      <div class="db-blocks">
+        <div class="db-block">
+          <div class="db-block-head">🗄 Расположение базы данных</div>
         <div class="form-group">
             <label>Путь к файлу SQLite</label>
             <div class="db-path-row">
@@ -64,8 +73,12 @@
             <label>Текущее состояние</label>
             <div id="db_info_block" style="font-size:0.85rem;line-height:1.7;"></div>
         </div>
-                <div class="form-group" style="margin-top:18px;">
-            <label>🔄 Путь к сетевой папке обновлений</label>
+        </div><!-- /db-block storage -->
+
+        <div class="db-block">
+          <div class="db-block-head">🔄 Обновления</div>
+                <div class="form-group" style="margin-top:0;">
+            <label>Путь к сетевой папке обновлений</label>
             <div class="db-path-row">
                 <input type="text" id="net_update_path_input" placeholder="\\\\server\\share\\patches или /mnt/patches">
                 <button class="dict-add-btn" id="netUpdatePathSaveBtn">💾 Сохранить</button>
@@ -75,7 +88,11 @@
                 Изменения вступают в силу без перезапуска сервера.
             </div>
         </div>
-<div class="form-group" style="margin-top:18px;">
+        </div><!-- /db-block updates -->
+
+        <div class="db-block">
+          <div class="db-block-head">💾 Резервные копии</div>
+<div class="form-group" style="margin-top:0;">
             <label>Резервные копии базы данных</label>
             <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-bottom:10px;">
                 <button class="dict-add-btn" id="dbBackupNowBtn">💾 Создать бэкап сейчас</button>
@@ -87,8 +104,12 @@
                 Хранится в backups/db/, максимум 30 последних.
             </div>
         </div>
-        <div class="form-group" style="margin-top:18px;">
-            <label>🧹 Очистка базы данных</label>
+        </div><!-- /db-block backup -->
+
+        <div class="db-block">
+          <div class="db-block-head">🧹 Обслуживание</div>
+        <div class="form-group" style="margin-top:0;">
+            <label>Очистка базы данных</label>
             <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-bottom:10px;">
                 <button class="dict-add-btn" id="dbCleanupRunBtn">🧹 Выполнить очистку сейчас</button>
                 <label class="sum-toggle" style="justify-content:flex-start;">
@@ -120,9 +141,12 @@
             <div class="db-path-note">
                 audit_log — логи действий (рекомендуется 90–180 дней). Прочитанные уведомления удаляются через N дней. Принятые/отклонённые — через N дней. VACUUM выполняется автоматически, если освободилось ≥ 5 МБ. Обрезаются trk_debug.log (с конца, до 1 МБ), patch_backups (keep 20), backups/db (keep 10).
             </div>
-        </div>
-        <div class="form-group" style="margin-top:18px;">
-            <label>📊 Расчёт статистики</label>
+        </div><!-- /db-block cleanup -->
+
+        <div class="db-block">
+          <div class="db-block-head">📊 Статистика и график работы</div>
+        <div class="form-group" style="margin-top:0;">
+            <label>Расчёт статистики</label>
             <label class="sum-toggle" style="justify-content:flex-start;">
                 <input type="checkbox" id="statsIgnoreFutureCb" checked>
                 <span>Не учитывать отметки на будущие даты</span>
@@ -147,7 +171,11 @@
                 Влияет на: норму дня в календаре, лимит переработки при сохранении отметки, проценты загрузки в Своде, ёмкость в «Загрузке сотрудников», норму в «Моей неделе» и «Своде за неделю». Сами часы в work_logs не меняются — пересчитываются только производные показатели. Сб, Вс и праздники = 0ч нормы (ввод часов = переработка).
             </div>
         </div>
-        <div class="form-group" style="margin-top:10px;">
+        </div><!-- /db-block stats -->
+
+        <div class="db-block">
+          <div class="db-block-head">🧩 Плагины и выгрузки</div>
+        <div class="form-group" style="margin-top:0;">
             <label class="sum-toggle" style="justify-content:flex-start;">
                 <input type="checkbox" id="excelMaskNamesCb">
                 <span>Маскировать ФИО в Excel-выгрузках</span>
@@ -160,6 +188,8 @@
             <label>Загруженные плагины</label>
             <div id="plugins_list" style="font-size:0.85rem;line-height:1.7;"></div>
         </div>
+        </div><!-- /db-block plugins -->
+      </div><!-- /db-blocks -->
     </div>
 
     {# PATCH: исправлена вложенность панелей.

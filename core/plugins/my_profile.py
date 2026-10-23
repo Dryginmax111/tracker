@@ -260,6 +260,21 @@ body{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Arial,sans-s
     <button class="tab active" data-tab="tasks">📋 Мои задачи</button>
     <button class="tab" data-tab="absences">🏖 Отпуска</button>
     <button class="tab" data-tab="import" id="tabImport" style="display:none;">📥 Импорт из Excel</button>
+    <button class="tab" data-tab="security">🔑 Безопасность</button>
+  </div>
+
+  <div class="panel" id="panel-security">
+    <div id="pwdMsg" class="msg"></div>
+    <div class="card" style="max-width:460px;padding:18px;border:1px solid var(--pg-card-border);border-radius:14px;background:var(--pg-card-bg);display:flex;flex-direction:column;gap:10px;">
+      <div style="font-weight:800;font-size:.95rem;">Смена пароля</div>
+      <label style="font-size:.78rem;color:var(--pg-meta);display:flex;flex-direction:column;gap:4px;">Текущий пароль
+        <input type="password" id="pwdOld" autocomplete="current-password" style="padding:8px 10px;border-radius:8px;border:1px solid var(--pg-input-border);background:var(--pg-input-bg);color:var(--pg-text);font-family:inherit;"></label>
+      <label style="font-size:.78rem;color:var(--pg-meta);display:flex;flex-direction:column;gap:4px;">Новый пароль (мин. 6 символов)
+        <input type="password" id="pwdNew" autocomplete="new-password" style="padding:8px 10px;border-radius:8px;border:1px solid var(--pg-input-border);background:var(--pg-input-bg);color:var(--pg-text);font-family:inherit;"></label>
+      <label style="font-size:.78rem;color:var(--pg-meta);display:flex;flex-direction:column;gap:4px;">Повторите новый пароль
+        <input type="password" id="pwdNew2" autocomplete="new-password" style="padding:8px 10px;border-radius:8px;border:1px solid var(--pg-input-border);background:var(--pg-input-bg);color:var(--pg-text);font-family:inherit;"></label>
+      <button id="pwdSubmit" style="margin-top:4px;padding:9px 14px;border:none;border-radius:8px;background:var(--pg-accent);color:#fff;font-family:inherit;font-weight:700;cursor:pointer;">💾 Сменить пароль</button>
+    </div>
   </div>
   
   <div class="panel active" id="panel-tasks">
@@ -407,6 +422,26 @@ document.querySelectorAll('.tab').forEach(function(b){
         document.querySelectorAll('.panel').forEach(function(p){p.classList.toggle('active',p.id==='panel-'+state.tab);});
         if(state.tab==='absences')renderHeatmap();
     });
+});
+
+// v1.1.5: смена пароля в личном кабинете (любой активный пользователь)
+document.getElementById('pwdSubmit').addEventListener('click',function(){
+    var oldP=document.getElementById('pwdOld').value;
+    var n1=document.getElementById('pwdNew').value;
+    var n2=document.getElementById('pwdNew2').value;
+    if(!oldP||!n1){showMsg('pwdMsg','Заполните все поля','err');return;}
+    if(n1.length<6){showMsg('pwdMsg','Новый пароль слишком короткий (мин. 6 символов)','err');return;}
+    if(n1!==n2){showMsg('pwdMsg','Новые пароли не совпадают','err');return;}
+    var hdrs={'Content-Type':'application/json'};if(window.REESTR_CSRF)hdrs['X-CSRF-Token']=window.REESTR_CSRF;
+    fetch('/api/plugins/my_profile/change_password',{method:'POST',headers:hdrs,credentials:'same-origin',
+        body:JSON.stringify({current_password:oldP,new_password:n1})})
+    .then(function(r){return r.json();})
+    .then(function(d){
+        if(d.success){showMsg('pwdMsg','✅ Пароль изменён','ok');
+            document.getElementById('pwdOld').value='';document.getElementById('pwdNew').value='';document.getElementById('pwdNew2').value='';}
+        else showMsg('pwdMsg',d.error||'Ошибка смены пароля','err');
+    })
+    .catch(function(){showMsg('pwdMsg','Сеть недоступна','err');});
 });
 
 function renderWho(d){
@@ -1588,6 +1623,33 @@ def register(app, db, hooks):
                             'message': 'Сотрудник не найден.'}), 200
         payload['success'] = True
         return jsonify(payload)
+
+    @app.route('/api/plugins/my_profile/change_password', methods=['POST'])
+    def _mp_change_password():
+        # v1.1.5: смена собственного пароля — доступен любому активному пользователю,
+        # привязка к сотруднику и права администратора не требуются
+        try:
+            from auth import current_user, verify_password, hash_password
+            u = current_user(db)
+        except Exception:
+            u = None
+        if not u:
+            return jsonify({'success': False, 'error': 'Требуется вход'}), 401
+        body = request.get_json() or {}
+        cur_pwd = str(body.get('current_password', ''))
+        new_pwd = str(body.get('new_password', ''))
+        if len(new_pwd) < 6:
+            return jsonify({'success': False, 'error': 'Новый пароль слишком короткий (мин. 6 символов)'}), 400
+        row = db.user_get(u['id'])
+        if not row or not verify_password(row['password_hash'], cur_pwd):
+            return jsonify({'success': False, 'error': 'Текущий пароль указан неверно'}), 400
+        db.user_update(u['id'], u['role'], u.get('display_name', ''),
+                       u.get('employee_id', ''), True, pwd_hash=hash_password(new_pwd))
+        try:
+            _audit_mp = None
+        except Exception:
+            pass
+        return jsonify({'success': True})
 
     @app.route('/api/plugins/my_profile/vacation/add', methods=['POST'])
     def _mp_vac_add():

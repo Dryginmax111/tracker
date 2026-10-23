@@ -2464,6 +2464,7 @@ on('addDepartmentBtn', 'click', function() { openDepartmentModal(null); });
    СОТРУДНИКИ CRUD
    ============================================================ */
 var _vacDraftEmpId = null;
+var _vacEditId = null; // v1.1.6: id периода, редактируемого через форму (null = добавление)
 function openEmployeeModal(emp) {
     emp = emp || null;
     _vacDraftEmpId = emp ? emp.id : null;
@@ -2496,9 +2497,11 @@ function openEmployeeModal(emp) {
         d.classList.toggle('active', d.getAttribute('data-color') === color);
     });
     var vs = $('vacSection'); if (vs) vs.style.display = emp ? '' : 'none';
+    _vacEditId = null; // v1.1.6: сброс режима редактирования периода
     renderVacations(emp);
     g('vac_from', ''); g('vac_to', ''); g('vac_comment', '');
     var vt = $('vac_type'); if (vt) vt.value = 'vacation';
+    var _vab = $('vacAddBtn'); if (_vab) _vab.textContent = '➕';
     var m = $('employeeModal'); if (m) m.classList.add('active');
     setTimeout(function() { var n = $('emp_name'); if (n) n.focus(); }, 50);
 }
@@ -2521,7 +2524,9 @@ function renderVacations(emp) {
             + '<div class="vac-item-dates">' + absenceIcon(vt) + ' ' + escapeHtml(absenceLabel(vt)) + ': '
             + escapeHtml(formatDateHuman(v.from || '')) + ' — ' + escapeHtml(formatDateHuman(v.to || '')) + '</div>'
             + (v.comment ? '<div class="vac-item-comment">' + escapeHtml(v.comment) + '</div>' : '')
-            + '</div><button class="dict-action-btn danger" data-vac-id="' + _vid + '" data-idx="' + i + '" type="button">🗑</button></div>';
+            + '</div>'
+            + '<button class="dict-action-btn" data-vact="edit" data-vac-id="' + _vid + '" data-idx="' + i + '" type="button" title="Изменить период">✏️</button>'
+            + '<button class="dict-action-btn danger" data-vact="del" data-vac-id="' + _vid + '" data-idx="' + i + '" type="button">🗑</button></div>';
     });
     list.innerHTML = html;
     list.querySelectorAll('.dict-action-btn').forEach(function(btn) {
@@ -2529,6 +2534,17 @@ function renderVacations(emp) {
             var idx = parseInt(this.getAttribute('data-idx'), 10);
             var vid = this.getAttribute('data-vac-id');
             if (!_vacDraftEmpId) return;
+            // v1.1.6: кнопка ✏️ — подставить период в форму для редактирования
+            if (this.getAttribute('data-vact') === 'edit') {
+                var v = vac[idx];
+                if (!v) return;
+                var g2 = function(id, val) { var el = $(id); if (el) el.value = val || ''; };
+                g2('vac_from', v.from); g2('vac_to', v.to); g2('vac_comment', v.comment);
+                var vtEl = $('vac_type'); if (vtEl) vtEl.value = v.type || 'vacation';
+                _vacEditId = (v.id != null) ? v.id : null;
+                var ab = $('vacAddBtn'); if (ab) ab.textContent = '💾';
+                return;
+            }
             // PATCH v1.0.6: отправляем id, если он есть; иначе fallback на index
             var _payload = { employee_id: _vacDraftEmpId };
             var _vidInt = parseInt(vid, 10);
@@ -2537,6 +2553,7 @@ function renderVacations(emp) {
             } else {
                 _payload.index = idx;
             }
+            if (!isNaN(_vidInt) && _vacEditId === _vidInt) _vacEditId = null;
             apiJson('/api/tracker/employee/vacation/delete', {
                 method: 'POST', headers: {'Content-Type': 'application/json'},
                 body: JSON.stringify(_payload)
@@ -2557,13 +2574,21 @@ on('vacAddBtn', 'click', function() {
     var comment = $('vac_comment') ? $('vac_comment').value.trim() : '';
     var vtype = $('vac_type') ? ($('vac_type').value || 'vacation') : 'vacation';
     if (!from || !to) { notify('❌ Укажите даты', 'error'); return; }
-    apiJson('/api/tracker/employee/vacation/add', {
+    // v1.1.6: если выбран период для правки — отправляем update по id
+    var _edit = (_vacEditId != null);
+    var _url = _edit ? '/api/tracker/employee/vacation/update' : '/api/tracker/employee/vacation/add';
+    var _body = { employee_id: _vacDraftEmpId, from: from, to: to, type: vtype, comment: comment };
+    if (_edit) _body.id = _vacEditId;
+    apiJson(_url, {
         method: 'POST', headers: {'Content-Type': 'application/json'},
-        body: JSON.stringify({ employee_id: _vacDraftEmpId, from: from, to: to, type: vtype, comment: comment })
+        body: JSON.stringify(_body)
     }).then(function(d) {
         if (!d.success) throw new Error(d.error || 'Ошибка');
         var g = function(id) { var el = $(id); if (el) el.value = ''; };
         g('vac_from'); g('vac_to'); g('vac_comment');
+        var vtEl = $('vac_type'); if (vtEl) vtEl.value = 'vacation';
+        _vacEditId = null;
+        var ab = $('vacAddBtn'); if (ab) ab.textContent = '➕';
         return loadState();
     }).then(function() {
         var emp2 = state.employees.find(function(x) { return x.id === _vacDraftEmpId; });
@@ -17426,6 +17451,9 @@ function _applyLayout(){
         var grp = $(gid);
         if (grp && !grp.querySelector('details')) {
             var title = (gid === 'taskOrdersGroup') ? '📄 Приказы / распоряжения' : '🔗 Ссылки';
+            // v1.1.7: убираем исходную подпись группы — она дублирует заголовок спойлера
+            var _dupLbl = grp.querySelector(':scope > label');
+            if (_dupLbl) _dupLbl.remove();
             var details = document.createElement('details');
             details.className = 'task-section';
             details.innerHTML = '<summary>' + title + ' <span class="cnt"></span></summary><div class="task-section-body"></div>';

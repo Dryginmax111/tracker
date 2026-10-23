@@ -337,6 +337,17 @@ class TrackerDB:
             (emp_id, dfrom, dto))
         return r is not None
 
+    def update_vacation(self, vac_id, emp_id, dfrom, dto, vtype, comment):
+        """v1.1.6: редактирование периода отпуска/командировки."""
+        cur = self.exec(
+            'UPDATE employee_vacations SET date_from=?, date_to=?, vtype=?, comment=? '
+            'WHERE id=? AND employee_id=?',
+            (dfrom, dto, vtype, comment, vac_id, emp_id))
+        try:
+            return cur.rowcount > 0
+        except Exception:
+            return True
+
     # ---------------- departments ----------------
     def upsert_department(self, dep_id, name, color, head_employee_id=''):
         row = self.query_one('SELECT id FROM departments WHERE id=?', (dep_id,))

@@ -55,6 +55,7 @@ PERMISSION_GROUPS = [
             ('plugin.my_profile.use',  '👤 Мой профиль'),
             ('plugin.week_ach.use',    '🏆 Достижения недели'),
             ('plugin.capacity.use',    '⚖ Загрузка сотрудников'),
+            ('plugin.daily_report.use', '🌅 Отчёт за день'),
         ],
     },
     {
@@ -106,6 +107,9 @@ DEFAULT_USER_PERMISSIONS = {
     'plugin.week_ach.use',
     'plugin.capacity.use',
 }
+
+# v1.1.8: «Отчёт за день» доступен всем активным пользователям (см. также PERMISSION_GROUPS)
+DEFAULT_USER_PERMISSIONS.add('plugin.daily_report.use')
 
 
 def default_permissions_for(role):

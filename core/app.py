@@ -1365,6 +1365,47 @@ def create_app():
         _audit(db, current_user(db), 'delete', 'vacation', emp_id, {'vacation_id': vac_id_int})
         return jsonify({'success': True})
 
+    @app.route('/api/tracker/employee/vacation/update', methods=['POST'])
+    @login_required
+    @permission_required('action.employee.vacation.edit')
+    def api_vacation_update():
+        """v1.1.6: редактирование периода отпуска/командировки по id."""
+        body = request.get_json() or {}
+        emp_id = str(body.get('employee_id', '')).strip()
+        vac_id = body.get('id')
+        try:
+            vac_id_int = int(vac_id)
+        except (ValueError, TypeError):
+            return jsonify({'success': False, 'error': 'Некорректный id'}), 400
+        dfrom = str(body.get('from', '')).strip()
+        dto = str(body.get('to', '')).strip()
+        vtype = str(body.get('type', 'vacation')).strip()
+        if vtype not in ABSENCE_TYPES:
+            vtype = 'vacation'
+        comment = str(body.get('comment', '')).strip()[:200]
+        if not emp_id:
+            return jsonify({'success': False, 'error': 'Не указан сотрудник'}), 400
+        if not _valid_date(dfrom) or not _valid_date(dto):
+            return jsonify({'success': False, 'error': 'Некорректные даты'}), 400
+        if dfrom > dto:
+            dfrom, dto = dto, dfrom
+        row = db.query_one(
+            'SELECT id FROM employee_vacations WHERE id=? AND employee_id=?',
+            (vac_id_int, emp_id))
+        if not row:
+            return jsonify({'success': False, 'error': 'Период не найден'}), 404
+        # пересечение проверяем с исключением самой редактируемой записи
+        conflict = db.query_one(
+            'SELECT id FROM employee_vacations WHERE employee_id=? AND id<>? '
+            'AND NOT (date_to < ? OR date_from > ?) LIMIT 1',
+            (emp_id, vac_id_int, dfrom, dto))
+        if conflict:
+            return jsonify({'success': False, 'error': 'Пересекается с другим периодом'}), 400
+        db.update_vacation(vac_id_int, emp_id, dfrom, dto, vtype, comment)
+        _audit(db, current_user(db), 'update', 'vacation', emp_id,
+               {'vacation_id': vac_id_int, 'from': dfrom, 'to': dto, 'type': vtype})
+        return jsonify({'success': True})
+
     # ============================================================
     # API: DEPARTMENTS
     # ============================================================
