@@ -356,7 +356,7 @@ body{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Arial,sans-s
       <div class="import-row">
         <label style="font-size:.75rem;color:var(--pg-meta);display:inline-flex;align-items:center;gap:6px;">При пересечении: <select id="impStrategy" style="padding:5px 8px;border-radius:6px;border:1px solid var(--pg-input-border);background:var(--pg-input-bg);color:var(--pg-text);font-family:inherit;font-size:.8rem;"><option value="ignore">пропустить</option><option value="replace">заменить</option><option value="skip_duplicates">только дубли</option><option value="fail">отменить</option></select></label>
         <label style="font-size:.75rem;color:var(--pg-meta);display:inline-flex;align-items:center;gap:6px;">Год: <input type="number" id="impYear" min="2000" max="2100" step="1" style="width:80px;padding:5px 8px;border-radius:6px;border:1px solid var(--pg-input-border);background:var(--pg-input-bg);color:var(--pg-text);font-family:inherit;font-size:.8rem;"></label>
-        {# PATCH v1.1.9: уровень доступа для учёток, создаваемых при импорте #}
+        <!-- PATCH v1.1.9: уровень доступа для учёток, создаваемых при импорте -->
         <label style="font-size:.75rem;color:var(--pg-meta);display:inline-flex;align-items:center;gap:6px;">Доступ новых учётных записей: <select id="impPermPreset" style="padding:5px 8px;border-radius:6px;border:1px solid var(--pg-input-border);background:var(--pg-input-bg);color:var(--pg-text);font-family:inherit;font-size:.8rem;"><option value="user">👤 Пользователь</option><option value="observer">👁 Наблюдатель</option><option value="employee_full">🧑‍💼 Сотрудник с задачами</option><option value="lead">⭐ Руководитель</option></select></label>
       </div>
       <div id="impPreviewBox"></div>
