@@ -1,0 +1,42 @@
+{
+  "id": "v1.3.8-hyp-visual-polish",
+  "target_version": "1.3.8",
+  "requires": ["v1.3.7-hyp-people-spoiler"],
+  "description": "Визуальный полиш дерева гипотез: (1) Имена назначенных сотрудников выводятся прямо в свернутом спойлере (первые 3 + счетчик остальных). (2) Убрано дублирование названий в заголовках гипотез и заданий. (3) На плитке задачи в бейдже 🧪 добавлена цветовая индикация статуса (✅ - все готово, ❌ - есть провал, 🔄 - в работе). (4) Улучшено оформление полей ввода и кнопок статусов.",
+  "operations": [
+    {
+      "type": "replace",
+      "path": "./static/tracker.js",
+      "find": "                + '<span class=\"hyp-title-preview\">' + esc(h.title || 'без названия') + '</span>'\n                + '<span class=\"hyp-progress\">' + doneCnt + '/' + kids.length + '</span>'",
+      "content": "                + '<span class=\"hyp-title-preview\">' + (h.title ? '' : 'без названия') + '</span>'\n                + '<span class=\"hyp-progress\">' + doneCnt + '/' + kids.length + '</span>'",
+      "count": 1
+    },
+    {
+      "type": "replace",
+      "path": "./static/tracker.js",
+      "find": "                        + '<div class=\"hyp-head\"><span class=\"hyp-title-preview\">📌 Задание ' + (ti + 1) + ': ' + esc(t.title || 'без названия') + '</span>'",
+      "content": "                        + '<div class=\"hyp-head\"><span class=\"hyp-title-preview\">📌 Задание ' + (ti + 1) + '</span>'",
+      "count": 1
+    },
+    {
+      "type": "replace",
+      "path": "./static/tracker.js",
+      "find": "            + '<details class=\"hyp-people-details\"><summary class=\"hyp-people-label\">👥 Ответственные <span class=\"hyp-people-count\">' + ((item.assignees && item.assignees.length) || 0) + '</span></summary>' + peopleHtml(item) + '</details>'",
+      "content": "            + (function(){\n                var _asgNames = '';\n                if (item.assignees && item.assignees.length) {\n                    var _st = window.__trkState || {};\n                    var _emps = _st.employees || [];\n                    var _names = [];\n                    item.assignees.slice(0, 3).forEach(function(id) {\n                        var e = _emps.find(function(x){ return x.id === id; });\n                        if (e) _names.push(e.name.split(' ')[0]);\n                    });\n                    if (item.assignees.length > 3) _names.push('+' + (item.assignees.length - 3));\n                    _asgNames = '<span class=\"hyp-asg-names\">' + esc(_names.join(', ')) + '</span>';\n                }\n                return '<details class=\"hyp-people-details\"><summary class=\"hyp-people-label\">👥 Ответственные ' + _asgNames + ' <span class=\"hyp-people-count\">' + ((item.assignees && item.assignees.length) || 0) + '</span></summary>' + peopleHtml(item) + '</details>';\n            })()",
+      "count": 1
+    },
+    {
+      "type": "replace",
+      "path": "./static/tracker.js",
+      "find": "            var _cls = _done === _total ? 'hyp-badge-done' : (_done > 0 ? 'hyp-badge-progress' : 'hyp-badge-new');\n            _hypBadge = '<span class=\"task-card-badge hyp-badge ' + _cls + '\" title=\"Выполнено ' + _done + ' из ' + _total + '\">🧪 ' + _done + '/' + _total + '</span>';",
+      "content": "            var _hasFailed = (_hTasks.length ? _hTasks : _hHyps).some(function(x){ return x.status === 'failed'; });\n            var _hasInProgress = (_hTasks.length ? _hTasks : _hHyps).some(function(x){ return x.status === 'in_progress'; });\n            var _statusIcon = _hasFailed ? ' ❌' : (_done === _total ? ' ✅' : (_hasInProgress ? ' 🔄' : ''));\n            var _cls = _done === _total ? 'hyp-badge-done' : (_hasFailed ? 'hyp-badge-failed' : (_hasInProgress ? 'hyp-badge-progress' : 'hyp-badge-new'));\n            _hypBadge = '<span class=\"task-card-badge hyp-badge ' + _cls + '\" title=\"Выполнено ' + _done + ' из ' + _total + '\">🧪 ' + _done + '/' + _total + _statusIcon + '</span>';",
+      "count": 1
+    },
+    {
+      "type": "append",
+      "path": "./static/app.css",
+      "idempotent": true,
+      "content": "\n\n/* ============================================================\n   PATCH v1.3.8 — Визуальный полиш дерева гипотез\n   ============================================================ */\n\n/* Заголовок гипотезы */\n.hyp-card > .hyp-head {\n    padding: 6px 4px !important;\n    border-bottom: 1px dashed transparent !important;\n    transition: border-color 0.15s !important;\n}\n.hyp-card > .hyp-head:hover {\n    border-bottom-color: var(--trk-border-soft) !important;\n}\n\n/* Убираем визуальный шум: input-ы внутри гипотез */\n.hyp-fields input[type=\"text\"].hyp-fld,\n.hyp-fields textarea.hyp-fld {\n    background: transparent !important;\n    border: 1px solid transparent !important;\n    transition: border-color 0.15s, background 0.15s !important;\n    padding: 6px 8px !important;\n}\n.hyp-fields input[type=\"text\"].hyp-fld:hover,\n.hyp-fields textarea.hyp-fld:hover {\n    background: rgba(128,128,128,0.05) !important;\n    border-color: var(--trk-border-soft) !important;\n}\n.hyp-fields input[type=\"text\"].hyp-fld:focus,\n.hyp-fields textarea.hyp-fld:focus {\n    background: var(--trk-input-bg) !important;\n    border-color: var(--trk-accent) !important;\n    box-shadow: 0 0 0 2px rgba(245,215,110,0.15) !important;\n}\n\n/* Имена ответственных в свернутом спойлере */\n.hyp-asg-names {\n    font-weight: 500 !important;\n    color: var(--trk-desc) !important;\n    font-size: 0.75rem !important;\n    margin-left: 4px !important;\n    white-space: nowrap !important;\n    overflow: hidden !important;\n    text-overflow: ellipsis !important;\n    max-width: 200px !important;\n}\n\n/* Бейдж проваленной гипотезы */\n.hyp-badge-failed {\n    background: rgba(231,76,60,0.18) !important;\n    color: #e74c3c !important;\n    border-color: rgba(231,76,60,0.35) !important;\n}\nbody.trk-theme-light .hyp-badge-failed {\n    background: rgba(198,40,40,0.12) !important;\n    color: #c62828 !important;\n    border-color: rgba(198,40,40,0.3) !important;\n}\n\n/* Красивые кнопки статусов */\n.hyp-st-btn {\n    border-radius: 50% !important;\n    width: 28px !important;\n    height: 28px !important;\n    display: inline-flex !important;\n    align-items: center !important;\n    justify-content: center !important;\n    font-size: 0.9rem !important;\n    padding: 0 !important;\n    opacity: 0.25 !important;\n    filter: grayscale(1) !important;\n}\n.hyp-st-btn:hover {\n    opacity: 0.7 !important;\n    filter: grayscale(0.3) !important;\n    transform: scale(1.1) !important;\n}\n.hyp-st-btn.active {\n    opacity: 1 !important;\n    filter: none !important;\n    box-shadow: 0 0 0 2px currentColor !important;\n}\n"
+    }
+  ]
+}
