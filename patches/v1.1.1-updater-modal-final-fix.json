@@ -1,0 +1,21 @@
+{
+  "id": "v1.1.1-updater-modal-fix",
+  "target_version": "1.1.1",
+  "requires": [],
+  "description": "Жёсткий фикс окна обновлений. Возвращает класс modal-overlay для правильного позиционирования и внедряет CSS прямо в updater.py (так как страница не подгружает app.css). Внутренняя структура переделана на flex для фиксации шапки и кнопок.",
+  "operations": [
+    {
+      "type": "regex",
+      "path": "./plugins/updater.py",
+      "pattern": "<div class=\"(?:modal|modal-overlay)\" id=\"updaterCheckModal\">[\\s\\S]*?(?=<div class=\"modal-overlay\" id=\"restartModal\">)",
+      "content": "<div class=\"modal-overlay\" id=\"updaterCheckModal\">\n    <div class=\"modal-box updater-modal-layout\">\n        <div class=\"updater-modal-header\">\n            <h2 class=\"warn\" style=\"display:flex; align-items:center; gap:10px; margin:0;\">\n                <span style=\"font-size:1.7rem;\">⬆</span> Доступно обновление\n            </h2>\n        </div>\n        <div class=\"updater-modal-scroll\" id=\"ucBody\"></div>\n        <div class=\"updater-modal-footer\">\n            <div style=\"margin-bottom:16px; padding:10px; background:var(--pg-inner-bg); border-radius:8px; display:flex; align-items:center; gap:8px;\">\n                <input type=\"checkbox\" id=\"ucAutoUpdate\" style=\"width:16px; height:16px; accent-color:var(--trk-accent); cursor:pointer;\">\n                <label for=\"ucAutoUpdate\" style=\"font-size:0.85rem; color:var(--trk-text); cursor:pointer; margin:0;\">Автоматически устанавливать обновления без подтверждения</label>\n            </div>\n            <div class=\"modal-actions\" style=\"margin:0;\">\n                <button class=\"btn btn-secondary\" id=\"ucCancelBtn\">Не сейчас</button>\n                <button class=\"btn btn-primary\" id=\"ucApplyBtn\">Обновить сейчас</button>\n            </div>\n        </div>\n    </div>\n</div>\n\n"
+    },
+    {
+      "type": "replace",
+      "path": "./plugins/updater.py",
+      "find": "</style>",
+      "content": "/* PATCH v1.1.1 UPDATER MODAL */\n.updater-modal-layout {\n    display: flex !important;\n    flex-direction: column !important;\n    max-height: 85vh !important;\n    padding: 0 !important;\n    overflow: hidden !important;\n    width: 100%;\n    max-width: 560px;\n    background: var(--pg-card-bg);\n    border: 1px solid var(--pg-card-border);\n    border-radius: 18px;\n    box-shadow: 0 20px 60px rgba(0,0,0,0.55);\n}\n.updater-modal-header {\n    padding: 20px 24px 16px !important;\n    border-bottom: 1px solid rgba(128,128,128,0.2) !important;\n    flex: 0 0 auto !important;\n}\n.updater-modal-scroll {\n    flex: 1 1 auto !important;\n    overflow-y: auto !important;\n    padding: 20px 24px !important;\n    min-height: 0 !important;\n}\n.updater-modal-scroll::-webkit-scrollbar { width: 8px; }\n.updater-modal-scroll::-webkit-scrollbar-track { background: rgba(128,128,128,0.05); border-radius: 4px; }\n.updater-modal-scroll::-webkit-scrollbar-thumb { background: var(--trk-card-border, rgba(128,128,128,0.2)); border-radius: 4px; }\n.updater-modal-scroll::-webkit-scrollbar-thumb:hover { background: var(--trk-accent, #f5d76e); }\n.updater-modal-footer {\n    padding: 16px 24px 20px !important;\n    border-top: 1px solid rgba(128,128,128,0.2) !important;\n    background: var(--pg-card-bg) !important;\n    flex: 0 0 auto !important;\n}\n</style>",
+      "count": 1
+    }
+  ]
+}
