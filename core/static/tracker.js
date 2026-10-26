@@ -993,6 +993,19 @@ function _tagChipsForTask(t) {
         return '<span class="task-tag-chip">#' + escapeHtml(tag) + '</span>';
     }).join('');
 }
+/* PATCH v1.2.0: чипы гипотез на карточке задачи (плитка/список) */
+function _hypChipsForTask(t) {
+    var hs = (t && t.hypotheses) || [];
+    if (!hs.length) return '';
+    return '<div class="task-hyp-badges">' + hs.slice(0, 8).map(function(h) {
+        var c = h.color || '#7c4dff';
+        var doneCls = (h.status === 'done') ? ' done' : '';
+        var jobsN = (h.jobs || []).length;
+        return '<span class="task-hyp-badge' + doneCls + '" style="--hyp-c:' + escapeHtml(c) + '" title="'
+            + escapeHtml((h.start_date || '—') + ' → ' + (h.deadline || '—'))
+            + (jobsN ? ' · заданий: ' + jobsN : '') + '">🧪 ' + escapeHtml(h.name) + '</span>';
+    }).join('') + (hs.length > 8 ? '<span class="task-hyp-badge">+' + (hs.length - 8) + '</span>' : '') + '</div>';
+}
 function _completionBadge(t) {
     if (!t || !t.completion_kind) return '';
     var cls = t.completion_kind;
@@ -1031,6 +1044,7 @@ function taskCardRow(t) {
         + '<div class="dict-item-body"><div class="dict-item-name' + (t.overdue ? ' overdue' : '') + '">' + escapeHtml(t.name) + '</div>'
         + (meta.length ? '<div class="dict-item-meta">' + meta.join(' · ') + '</div>' : '')
         + (tagsHtml ? '<div class="dict-item-meta" style="margin-top:3px;">' + tagsHtml + '</div>' : '')
+        + _hypChipsForTask(t)
         + (compBadge ? '<div class="dict-item-meta" style="margin-top:3px;">' + compBadge + '</div>' : '')
         + '</div><div class="dict-actions">'
         + (canCard ? '<button class="dict-action-btn" data-act="card" title="Карточка">📊</button>' : '')
@@ -2943,6 +2957,203 @@ function syncTaskCompletedAt() {
     }
     if (!enabled) field.value = '';
 }
+
+/* ================= PATCH v1.2.0: иерархия Проверка → Гипотезы → Задания ================= */
+var _HYP_COLORS = ['#7c4dff', '#00b8d4', '#ff6d00', '#2e7d32', '#c62828', '#f9a825', '#0288d1', '#ad1457'];
+var _hypDraft = [];        // черновик гипотез открытой задачи
+var _hypSeq = 0;           // временные id для новых строк (-1, -2, ...)
+var _hypBoundTaskId = null;
+var _hypEmpNames = function() {
+    var m = {};
+    (state.employees || []).forEach(function(e) { m[e.id] = e.name; });
+    return m;
+};
+function _hypNewRow(kind, parentUid) {
+    var uid = --_hypSeq;
+    var row = { uid: uid, id: '', name: '', start_date: '', deadline: '', status: 'active', assignees: [], _new: true };
+    if (kind === 'hyp') { row.formulation = ''; row.color = _HYP_COLORS[(_hypDraft.length) % _HYP_COLORS.length]; row.jobs = []; _hypDraft.push(row); }
+    else {
+        for (var i = 0; i < _hypDraft.length; i++) if (_hypDraft[i].uid === parentUid) { row._parentUid = parentUid; _hypDraft[i].jobs.push(row); break; }
+    }
+    return row;
+}
+function _hypFind(uid) {
+    for (var i = 0; i < _hypDraft.length; i++) {
+        if (_hypDraft[i].uid === uid) return { hyp: _hypDraft[i], job: null };
+        var js = _hypDraft[i].jobs || [];
+        for (var j = 0; j < js.length; j++) if (js[j].uid === uid) return { hyp: _hypDraft[i], job: js[j] };
+    }
+    return null;
+}
+function _hypLoadFromTask(task) {
+    _hypDraft = []; _hypSeq = 0;
+    var hs = (task && Array.isArray(task.hypotheses)) ? task.hypotheses : [];
+    hs.forEach(function(h) {
+        var row = { uid: ++_hypSeq * -1000 + h.id, id: h.id, name: h.name || '', formulation: h.formulation || '',
+                    start_date: h.start_date || '', deadline: h.deadline || '', status: h.status || 'active',
+                    color: h.color || _HYP_COLORS[_hypDraft.length % _HYP_COLORS.length],
+                    assignees: (h.assignees || []).slice(), jobs: [] };
+        (h.jobs || []).forEach(function(j) {
+            row.jobs.push({ uid: -(j.id + 1000000), id: j.id, name: j.name || '', description: j.description || '',
+                            start_date: j.start_date || '', deadline: j.deadline || '', status: j.status || 'active',
+                            assignees: (j.assignees || []).slice(), _new: false });
+        });
+        _hypDraft.push(row);
+    });
+}
+function renderHypTree() {
+    var box = $('hypTreeList'); if (!box) return;
+    var names = _hypEmpNames();
+    var asgChips = function(arr) {
+        return (arr || []).map(function(e) {
+            return '<span class="hyp-asg-chip">' + escapeHtml(names[e] || e) + '</span>';
+        }).join('') || '<span class="hyp-none">—</span>';
+    };
+    var html = _hypDraft.map(function(h) {
+        var jobs = (h.jobs || []).map(function(j) {
+            return '<div class="hyp-job-row" data-uid="' + j.uid + '">'
+                + '<span class="hyp-job-bullet">▸</span>'
+                + '<input type="text" class="hyp-f hyp-name" data-k="name" value="' + escapeHtml(j.name) + '" placeholder="Задание…">'
+                + '<input type="date" class="hyp-f hyp-date" data-k="start_date" value="' + escapeHtml(j.start_date) + '">'
+                + '<span class="hyp-dash">→</span>'
+                + '<input type="date" class="hyp-f hyp-date" data-k="deadline" value="' + escapeHtml(j.deadline) + '">'
+                + '<span class="hyp-asgs">' + asgChips(j.assignees) + '</span>'
+                + '<button type="button" class="hyp-mini" data-act="job-asg" title="Назначить исполнителей">👥</button>'
+                + '<button type="button" class="hyp-mini hyp-del" data-act="job-del" title="Удалить задание">✕</button>'
+                + '</div>';
+        }).join('');
+        return '<div class="hyp-card" data-uid="' + h.uid + '" style="--hyp-color:' + escapeHtml(h.color || '#7c4dff') + '">'
+            + '<div class="hyp-row1">'
+            + '<span class="hyp-dot" title="цвет"></span>'
+            + '<input type="text" class="hyp-f hyp-name" data-k="name" value="' + escapeHtml(h.name) + '" placeholder="Гипотеза…">'
+            + '<input type="date" class="hyp-f hyp-date" data-k="start_date" value="' + escapeHtml(h.start_date) + '">'
+            + '<span class="hyp-dash">→</span>'
+            + '<input type="date" class="hyp-f hyp-date" data-k="deadline" value="' + escapeHtml(h.deadline) + '">'
+            + '<select class="hyp-f hyp-status" data-k="status">'
+            + ['active', 'done', 'paused'].map(function(s) {
+                var lbl = s === 'done' ? '✅ готово' : (s === 'paused' ? '⏸ пауза' : '▶ в работе');
+                return '<option value="' + s + '"' + (h.status === s ? ' selected' : '') + '>' + lbl + '</option>';
+            }).join('') + '</select>'
+            + '<button type="button" class="hyp-mini" data-act="hyp-asg" title="Назначить ответственных">👥 ' + ((h.assignees || []).length || '') + '</button>'
+            + '<button type="button" class="hyp-mini hyp-del" data-act="hyp-del" title="Удалить гипотезу">✕</button>'
+            + '</div>'
+            + '<textarea class="hyp-form" data-k="formulation" rows="2" placeholder="Формулировка гипотезы…">' + escapeHtml(h.formulation || '') + '</textarea>'
+            + '<div class="hyp-jobs">' + (jobs || '<div class="hyp-none hyp-nojobs">пока нет заданий</div>') + '</div>'
+            + '<button type="button" class="btn btn-tiny hyp-addjob" data-act="job-add">＋ задание</button>'
+            + '</div>';
+    }).join('');
+    box.innerHTML = html || '<div class="hyp-none">Нет гипотез. Нажмите «＋ Гипотеза».</div>';
+}
+function _hypBindTreeOnce() {
+    var box = $('hypTreeList');
+    if (!box || box._hypBound) return;
+    box._hypBound = true;
+    box.addEventListener('input', function(ev) {
+        var card = ev.target.closest('[data-uid]'); if (!card) return;
+        var k = ev.target.getAttribute('data-k'); if (!k) return;
+        var f = _hypFind(parseInt(card.getAttribute('data-uid'), 10)); if (!f) return;
+        var row = f.job || f.hyp;
+        row[k] = ev.target.value;
+    });
+    box.addEventListener('click', function(ev) {
+        var btn = ev.target.closest('button[data-act]'); if (!btn) return;
+        var card = btn.closest('[data-uid]'); if (!card) return;
+        var uid = parseInt(card.getAttribute('data-uid'), 10);
+        var act = btn.getAttribute('data-act');
+        var f = _hypFind(uid); if (!f) return;
+        if (act === 'hyp-del') {
+            if (confirm('Удалить гипотезу вместе с заданиями?')) {
+                if (f.hyp.id) {
+                    apiJson('/api/tracker/hypothesis/delete', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ id: f.hyp.id }) })
+                        .then(function(d) { if (!d.success) throw new Error(d.error || 'Ошибка'); return trkRefreshAll().then(function() { _hypDraft = _hypDraft.filter(function(x) { return x.uid !== uid; }); renderHypTree(); }); })
+                        .catch(function(e) { notify('❌ ' + (e.message || 'Ошибка'), 'error'); });
+                    return;
+                }
+                _hypDraft = _hypDraft.filter(function(x) { return x.uid !== uid; });
+                renderHypTree();
+            }
+        } else if (act === 'job-del') {
+            if (f.job.id) {
+                apiJson('/api/tracker/job/delete', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ id: f.job.id }) })
+                    .then(function(d) { if (!d.success) throw new Error(d.error || 'Ошибка'); return trkRefreshAll().then(function() { f.hyp.jobs = f.hyp.jobs.filter(function(x) { return x.uid !== uid; }); renderHypTree(); }); })
+                    .catch(function(e) { notify('❌ ' + (e.message || 'Ошибка'), 'error'); });
+                return;
+            }
+            f.hyp.jobs = f.hyp.jobs.filter(function(x) { return x.uid !== uid; });
+            renderHypTree();
+        } else if (act === 'job-add') {
+            _hypNewRow('job', uid); renderHypTree();
+        } else if (act === 'hyp-asg' || act === 'job-asg') {
+            var row = f.job || f.hyp;
+            _openAssigneePicker(row.assignees || [], function(sel) {
+                row.assignees = sel; renderHypTree();
+            });
+        }
+    });
+}
+// Простой выбор исполнителей (checkbox-модалка поверх текущей)
+function _openAssigneePicker(selected, cb) {
+    var old = document.getElementById('hypAsgPicker');
+    if (old) old.remove();
+    var emps = (state.employees || []).slice().sort(function(a, b) { return String(a.name).localeCompare(String(b.name)); });
+    var wrap = document.createElement('div');
+    wrap.id = 'hypAsgPicker';
+    wrap.className = 'modal active hyp-picker';
+    wrap.innerHTML = '<div class="modal-content" style="max-width:420px"><h3>👥 Ответственные</h3>'
+        + '<div class="hyp-pick-list">'
+        + emps.map(function(e) {
+            return '<label class="hyp-pick-item"><input type="checkbox" value="' + escapeHtml(e.id) + '"'
+                + (selected.indexOf(e.id) !== -1 ? ' checked' : '') + '> ' + escapeHtml(e.name) + '</label>';
+        }).join('') + '</div>'
+        + '<div class="modal-actions"><button class="btn btn-primary" id="hypPickOk">OK</button>'
+        + '<button class="btn btn-secondary" id="hypPickCancel">Отмена</button></div></div>';
+    document.body.appendChild(wrap);
+    $('#hypPickOk').onclick = function() {
+        var sel = [];
+        wrap.querySelectorAll('input[type="checkbox"]:checked').forEach(function(c) { sel.push(c.value); });
+        wrap.remove(); cb(sel);
+    };
+    $('#hypPickCancel').onclick = function() { wrap.remove(); };
+    wrap.addEventListener('click', function(ev) { if (ev.target === wrap) wrap.remove(); });
+}
+function hypPersistAll(taskId, done) {
+    // сохраняем черновик по очереди; ошибки не прерывают цепочку полностью
+    var chain = Promise.resolve();
+    var errs = [];
+    _hypDraft.forEach(function(h) {
+        chain = chain.then(function() {
+            var hp = { id: h.id || '', task_id: taskId, name: h.name.trim(), formulation: h.formulation || '',
+                       start_date: h.start_date || '', deadline: h.deadline || '', status: h.status,
+                       color: h.color || '', assignees: h.assignees || [] };
+            if (!hp.name) { return; }
+            return apiJson('/api/tracker/hypothesis/save', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(hp) })
+                .then(function(d) {
+                    if (!d.success) { errs.push('Гипотеза «' + hp.name + '»: ' + d.error); return; }
+                    var realId = d.id; var isNewHyp = !h.id; h.id = realId;
+                    var jc = Promise.resolve();
+                    (h.jobs || []).forEach(function(j) {
+                        jc = jc.then(function() {
+                            var jp = { id: j.id || '', hypothesis_id: realId, name: j.name.trim(), description: j.description || '',
+                                       start_date: j.start_date || '', deadline: j.deadline || '', status: j.status,
+                                       assignees: j.assignees || [] };
+                            if (!jp.name) return;
+                            return apiJson('/api/tracker/job/save', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(jp) })
+                                .then(function(dd) { if (!dd.success) errs.push('Задание «' + jp.name + '»: ' + dd.error); else j.id = dd.id; });
+                        });
+                    });
+                    return jc;
+                })
+                .catch(function(e) { errs.push('Гипотеза «' + hp.name + '»: ' + (e.message || 'ошибка сети')); });
+        });
+    });
+    chain.then(function() {
+        if (errs.length) notify('⚠️ Часть иерархии не сохранена: ' + errs.join('; '), 'error');
+        if (done) done(errs);
+    });
+}
+window.__trkHypDraftInfo = function() { return { draft: _hypDraft, load: _hypLoadFromTask, render: renderHypTree }; };
+/* ================= /PATCH v1.2.0 ================= */
+
 function openTaskModal(task) {
     task = task || null;
     var t = $('taskModalTitle'); if (t) t.textContent = task ? 'Редактировать задачу' : 'Новая задача';
@@ -2989,6 +3200,11 @@ function openTaskModal(task) {
     renderTaskDepartmentsList(depIds);
     renderAssigneesList((task && task.assignees) || [], depIds);
     syncTaskCompletedAt();
+    // PATCH v1.2.0: дерево гипотез доступен только для сохранённой задачи
+    _hypLoadFromTask(task);
+    var _hg = $('hypTreeGroup');
+    if (_hg) _hg.hidden = !(task && task.id);
+    renderHypTree(); _hypBindTreeOnce();
     var m = $('taskModal'); if (m) m.classList.add('active');
     setTimeout(function() { var n = $('task_name'); if (n) n.focus(); }, 50);
 }
@@ -3025,7 +3241,20 @@ function saveTask() {
         body: JSON.stringify(payload)
     }).then(function(d) {
         if (!d.success) throw new Error(d.error || 'Ошибка');
-        return trkRefreshAll();
+        // PATCH v1.2.0: сохраняем дерево гипотез/заданий (id задачи берём из ответа —
+        // важно для новых задач). Черновик синхронизируется с state через trkRefreshAll.
+        var _tid = d.id || payload.id;
+        var _hasDraft = _hypDraft.length > 0;
+        var _after = function() {
+            _hypDraft = [];           // сброс черновика — перезагрузится из state
+            return trkRefreshAll();
+        };
+        if (_tid && _hasDraft) {
+            return new Promise(function(res) {
+                hypPersistAll(_tid, function() { res(_after()); });
+            });
+        }
+        return _after();
     }).catch(function(err) {
         var _msg = (err && err.message) || '';
         // На ошибке или отмене дубликата возвращаем модалку,
@@ -3048,6 +3277,14 @@ function deleteTask(id) {
     }).catch(function(err) { if (err && (err.message || '').indexOf('cancelled') !== -1) return; notify('❌ ' + (err.message || 'Ошибка'), 'error'); });
 }
 on('saveTaskBtn', 'click', saveTask);
+// PATCH v1.2.0: добавление гипотезы в открытую задачу
+on('addHypBtn', 'click', function() {
+    var tid = $('task_id') ? $('task_id').value : '';
+    if (!tid) { notify('Сначала сохраните задачу', 'error'); return; }
+    _hypNewRow('hyp'); renderHypTree();
+    var box = $('hypTreeList');
+    if (box && box.lastElementChild) { var inp = box.lastElementChild.querySelector('.hyp-name'); if (inp) inp.focus(); }
+});
 on('addTaskBtn', 'click', function() { openTaskModal(null); });
 on('addTaskBtn2', 'click', function() { openTaskModal(null); });
 on('taskIconPickBtn', 'click', function() {
