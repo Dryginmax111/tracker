@@ -1,0 +1,42 @@
+{
+  "id": "v1.4.10-tree-view-new",
+  "target_version": "1.4.10",
+  "requires": ["v1.4.9-task-icon-save-fix"],
+  "description": "Новый 4-й вид «🧪 Дерево» — компактные плитки задач с встроенным таймлайном гипотез/заданий. Оригинальный «☰ Компактно» возвращён к прежнему поведению без таймлайна. Изменения: (1) CSS — таймлайн показывается только для .tasks-grid[data-view='tree']; в compact и tile скрыт. (2) HTML — в #tskViewSeg добавлена 4-я кнопка data-view='tree'. (3) JS — view 'tree' разрешён в _read(); click-обработчик PATCH 1.0.9 (замена через regex — устойчиво к отступам); renderTasksFull устанавливает data-compact=1 + data-view='tree'.",
+  "operations": [
+    {
+      "type": "append",
+      "path": "./static/app.css",
+      "idempotent": true,
+      "content": "\n\n/* ============================================================\n   PATCH v1.4.10 — новый вид «🧪 Дерево» + оригинальный компакт\n   ============================================================ */\n\n.tasks-grid[data-compact=\"1\"]:not([data-view=\"tree\"]) .task-card-inline-timeline {\n    display: none !important;\n}\n.tasks-grid[data-view=\"tree\"] .task-card-inline-timeline {\n    display: block !important;\n}\n\n#tskViewSeg button[data-view=\"tree\"] {\n    color: var(--trk-desc);\n}\n#tskViewSeg button[data-view=\"tree\"]:hover {\n    color: var(--trk-accent);\n}\n#tskViewSeg button[data-view=\"tree\"].active {\n    background: rgba(155,89,182,0.20) !important;\n    border-color: #9b59b6 !important;\n    color: #c39bd3 !important;\n}\nbody.trk-theme-light #tskViewSeg button[data-view=\"tree\"].active {\n    background: rgba(155,89,182,0.15) !important;\n    color: #6c3483 !important;\n}\n"
+    },
+    {
+      "type": "replace",
+      "path": "./tamplates/tracker.html",
+      "find": "            <div class=\"segmented\" id=\"tskViewSeg\" title=\"Вид отображения задач\">\n                <button type=\"button\" data-view=\"tile\" title=\"Плитка\">▢ Плитка</button>\n                <button type=\"button\" data-view=\"compact\" title=\"Компактные плитки\">☰ Компактно</button>\n                <button type=\"button\" data-view=\"list\" title=\"Список (как в Справочниках)\">📋 Список</button>\n            </div>",
+      "content": "            <div class=\"segmented\" id=\"tskViewSeg\" title=\"Вид отображения задач\">\n                <button type=\"button\" data-view=\"tile\" title=\"Плитка\">▢ Плитка</button>\n                <button type=\"button\" data-view=\"compact\" title=\"Компактные плитки\">☰ Компактно</button>\n                <button type=\"button\" data-view=\"tree\" title=\"Компактные плитки с деревом гипотез\">🧪 Дерево</button>\n                <button type=\"button\" data-view=\"list\" title=\"Список (как в Справочниках)\">📋 Список</button>\n            </div>",
+      "count": 1
+    },
+    {
+      "type": "replace",
+      "path": "./static/tracker.js",
+      "find": "function _read(){\n    try {\n        var v = localStorage.getItem(KEY);\n        if (v === 'tile' || v === 'compact' || v === 'list') return v;\n    } catch(e){}\n    return 'tile';\n}",
+      "content": "function _read(){\n    try {\n        var v = localStorage.getItem(KEY);\n        if (v === 'tile' || v === 'compact' || v === 'list' || v === 'tree') return v;\n    } catch(e){}\n    return 'tile';\n}",
+      "count": 1
+    },
+    {
+      "type": "regex",
+      "path": "./static/tracker.js",
+      "pattern": "if \\(v !== 'tile' && v !== 'compact' && v !== 'list'\\) v = 'tile';",
+      "content": "if (v !== 'tile' && v !== 'compact' && v !== 'list' && v !== 'tree') v = 'tile';",
+      "count": 1
+    },
+    {
+      "type": "replace",
+      "path": "./static/tracker.js",
+      "find": "    if (_view === 'compact') {\n        list.setAttribute('data-compact', '1');\n    } else {\n        list.removeAttribute('data-compact');\n    }",
+      "content": "    if (_view === 'compact' || _view === 'tree') {\n        list.setAttribute('data-compact', '1');\n        if (_view === 'tree') {\n            list.setAttribute('data-view', 'tree');\n        } else {\n            list.removeAttribute('data-view');\n        }\n    } else {\n        list.removeAttribute('data-compact');\n        list.removeAttribute('data-view');\n    }",
+      "count": 1
+    }
+  ]
+}
