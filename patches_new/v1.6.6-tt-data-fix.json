@@ -1,0 +1,22 @@
+{
+  "id": "v1.6.6-tt-data-fix",
+  "target_version": "1.6.6",
+  "requires": ["v1.6.5-hyp-import-checkboxes-and-diagnostics"],
+  "description": "Фикс 'Cannot read properties of undefined (reading tt_item_YYYY-MM-DD)' в my_profile → renderHeatmap. window._TT_DATA инициализировался только внутри if(ttHtml), то есть при отсутствии ячеек с типом отсутствия (отпуск/больничный/командировка) оставался undefined, и attach-tooltip падал. Патч (1) сбрасывает window._TT_DATA = {} в начале renderHeatmap — между рендерами не накапливаются старые ключи; (2) страхует attach-tooltip через (window._TT_DATA || {})[ttId]. После фикса 'Мои задачи' больше не показывает alert при пустом heatmap (без отсутствий в периоде).",
+  "operations": [
+    {
+      "type": "replace",
+      "path": "./plugins/my_profile.py",
+      "find": "    var hm=d.heatmap;\n    var box=document.getElementById('vacHeatmap');",
+      "content": "    var hm=d.heatmap;\n    window._TT_DATA = {};\n    var box=document.getElementById('vacHeatmap');",
+      "count": 1
+    },
+    {
+      "type": "replace",
+      "path": "./plugins/my_profile.py",
+      "find": "    box.querySelectorAll('.hm-pill').forEach(function(el){\n        var ttId = el.getAttribute('data-tt');\n        var html = window._TT_DATA[ttId];\n        if (!html) return;",
+      "content": "    if(!window._TT_DATA) window._TT_DATA = {};\n    box.querySelectorAll('.hm-pill').forEach(function(el){\n        var ttId = el.getAttribute('data-tt');\n        var html = (window._TT_DATA || {})[ttId];\n        if (!html) return;",
+      "count": 1
+    }
+  ]
+}
