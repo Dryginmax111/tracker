@@ -1,0 +1,10 @@
+{
+  "enabled": true,
+  "schedule": {
+    "weekday": 4,
+    "hour": 18,
+    "minute": 0
+  },
+  "reports_dir": "share/reports",
+  "keep_reports": 52
+}

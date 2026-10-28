@@ -1,0 +1,160 @@
+{
+  "id": "v1.0.3-big-bundle",
+  "description": "BUNDLE v1.0.3: восстановление плагина «Недельные отчёты» (404 fix) + все правки v1.0.2 (критичные фиксы). Все операции optional — совместимо с ранее применёнными audit-fix-01..08/16.",
+  "target_version": "1.0.3",
+  "requires": [],
+  "operations": [
+
+    {"type": "regex", "path": "client_version.json",
+     "pattern": "\"version\"\\s*:\\s*\"1\\.0\\.[0-9]+\"",
+     "content": "\"version\": \"1.0.3\"",
+     "optional": true},
+
+    {"type": "write", "path": "plugins/weekly_report.py", "content": "PLACEHOLDER_PY", "optional": false},
+
+    {"type": "write", "path": "plugins/weekly_report.json", "content": {
+      "enabled": true,
+      "schedule": {"weekday": 4, "hour": 18, "minute": 0},
+      "reports_dir": "share/reports",
+      "keep_reports": 52
+    }, "optional": false},
+
+    {"type": "replace", "path": "tamplates/tracker.html",
+     "find": "<script src=\"/plugins-assets/daily_report.js\"></script>",
+     "content": "<script src=\"/plugins-assets/daily_report.js\"></script>\r\n<script src=\"/plugins-assets/weekly_report.js\"></script>",
+     "idempotent": true,
+     "optional": true},
+
+    {"type": "replace", "path": "templates/tracker.html",
+     "find": "<script src=\"/plugins-assets/daily_report.js\"></script>",
+     "content": "<script src=\"/plugins-assets/daily_report.js\"></script>\r\n<script src=\"/plugins-assets/weekly_report.js\"></script>",
+     "idempotent": true,
+     "optional": true},
+
+    {"type": "regex", "path": "static/tracker.js",
+     "pattern": "\\s*if\\s*\\(\\s*perms\\[\\s*['\"]tab\\.settings['\"]\\s*\\]\\s*\\)\\s*\\{[^}]*weekly_report[^}]*\\}",
+     "content": "/* weekly_report — регистрируется динамически через plugin.weekly.use */",
+     "optional": true},
+
+    {"type": "replace", "path": "patcher.py",
+     "find": "    ops = patch.get('operations') or []\n    if not isinstance(ops, list) or not ops:\n        print('  (нет операций)')\n        return True, []",
+     "content": "    ops = patch.get('operations')\n    if ops is None:\n        ops = patch.get('ops')\n    if not isinstance(ops, list) or not ops:\n        print('  (нет операций)')\n        return True, []",
+     "optional": true},
+
+    {"type": "replace", "path": "patcher.py",
+     "find": "        t = op.get('type', '?')",
+     "content": "        t = op.get('type') or op.get('op') or '?'",
+     "optional": true},
+
+    {"type": "replace", "path": "patcher.py",
+     "find": "        missing = [r for r in (patch.get('requires') or []) if r not in journal]\n        if missing and not args.dry:\n            print(f'{C.ERR}Требуются патчи: {\", \".join(missing)}{C.END}')\n            fail_n += 1\n            continue",
+     "content": "        missing = [r for r in (patch.get('requires') or []) if r not in journal]\n        if missing and not args.dry:\n            print(f'{C.ERR}Требуются патчи: {\", \".join(missing)}{C.END}')\n            fail_n += 1\n            print(f'{C.WARN}Цепочка прервана.{C.END}')\n            break",
+     "optional": true},
+
+    {"type": "replace", "path": "make_patches.py",
+     "find": "    p = {'id': pid, 'description': desc, 'target_version': target,\n         'requires': requires, 'ops': ops}",
+     "content": "    p = {'id': pid, 'description': desc, 'target_version': target,\n         'requires': requires, 'operations': ops}",
+     "optional": true},
+
+    {"type": "regex", "path": "make_patches.py",
+     "pattern": "\\{'op': '",
+     "content": "{'type': '",
+     "optional": true},
+
+    {"type": "replace", "path": "run.py",
+     "find": "    import zipfile\n    for whl in sorted(wheels_dir.glob('*.whl')):\n        tag = whl.stem.split('-')[-1]\n        cur_tag = f'cp{sys.version_info.major}{sys.version_info.minor}-cp{sys.version_info.major}{sys.version_info.minor}'\n        if 'cp3' in tag and cur_tag not in tag and 'py3-none-any' not in tag and 'py2.py3-none-any' not in tag:\n            continue  # wheel под другую версию/платформу",
+     "content": "    import zipfile\n    OK_TAGS = ('py3', 'py313', 'cp313', 'py2.py3', 'cp39', 'cp310', 'cp311', 'cp312')\n    def _wheel_tag_ok(fname):\n        segs = fname[:-4].split('-')\n        tags = segs[-3:] if len(segs) >= 4 else segs[-2:]\n        joined = '.'.join(tags)\n        if 'any' in joined:\n            return True\n        return any(t in joined for t in OK_TAGS)\n\n    for whl in sorted(wheels_dir.glob('*.whl')):\n        if not _wheel_tag_ok(whl.name):\n            print(f'[setup]   [SKIP] {whl.name} — не подходит для Python '\n                  f'{sys.version_info.major}.{sys.version_info.minor}')\n            continue",
+     "optional": true},
+
+    {"type": "replace", "path": "auth.py",
+     "find": "def login_user(uid):\n    session['uid'] = uid\n    session['csrf'] = secrets.token_urlsafe(32)",
+     "content": "def login_user(uid):\n    session.permanent = True\n    session['uid'] = uid\n    session['csrf'] = secrets.token_urlsafe(32)",
+     "optional": true},
+
+    {"type": "replace", "path": "auth.py",
+     "find": "# PATCH v2: алиасы для совместимости — если где-то остался старый вызов,\n# он не упадёт. Постепенно можно удалить.\nhash_password = hash_password\nverify_password = verify_password",
+     "content": "# v1.0.3: no-op self-alias'ы удалены.",
+     "optional": true},
+
+    {"type": "replace", "path": "auth.py",
+     "find": "\n\n# PATCH v1.0.28: g должен быть доступен в login_required — импорт на уровне модуля\nfrom flask import g as _flask_g  # noqa: E402\n",
+     "content": "\n\n# v1.0.3: дублирующий импорт g удалён.\n",
+     "optional": true},
+
+    {"type": "replace", "path": "app.py",
+     "find": "    app.secret_key = cfg.get('secret_key') or secrets.token_urlsafe(48)\n    app.config['SESSION_COOKIE_HTTPONLY'] = True",
+     "content": "    _sk = (cfg.get('secret_key') or '').strip()\n    if not _sk or _sk == '...':\n        _sk = secrets.token_urlsafe(48)\n        print('=' * 60)\n        print('[INIT] secret_key не задан или placeholder — сгенерирован новый.')\n        print(f'[INIT] Запишите в config.json: \"secret_key\": \"{_sk}\"')\n        print('=' * 60)\n    app.secret_key = _sk\n    app.config['SESSION_COOKIE_HTTPONLY'] = True",
+     "optional": true},
+
+    {"type": "replace", "path": "app.py",
+     "find": "    if _has_tmpl and (BASE_DIR / 'tamplates').is_dir():\n        from jinja2 import ChoiceLoader, FileSystemLoader\n        app.jinja_loader = ChoiceLoader([\n            FileSystemLoader(os.path.join(_core_dir, 'templates')),\n            FileSystemLoader(os.path.join(_core_dir, 'tamplates')),\n        ])",
+     "content": "    if _has_tmpl and (BASE_DIR / 'tamplates').is_dir():\n        print('=' * 60)\n        print('[WARN] Оба каталога шаблонов: templates/ и tamplates/.')\n        print('[WARN] Приоритет — templates/. Правки в tamplates/ ИГНОРИРУЮТСЯ.')\n        print('=' * 60)\n        from jinja2 import ChoiceLoader, FileSystemLoader\n        app.jinja_loader = ChoiceLoader([\n            FileSystemLoader(os.path.join(_core_dir, 'templates')),\n            FileSystemLoader(os.path.join(_core_dir, 'tamplates')),\n        ])",
+     "optional": true},
+
+    {"type": "replace", "path": "app.py",
+     "find": "        # PATCH v1.0.6: CSRF также на /logout\n        _need_csrf = (\n            request.path.startswith('/api/') or request.path == '/logout'\n        )\n        if _need_csrf and request.method not in ('GET', 'HEAD', 'OPTIONS'):\n            if not check_csrf():\n                return jsonify({'success': False, 'error': 'csrf'}), 400\n        return None",
+     "content": "        _need_csrf = (\n            request.path.startswith('/api/')\n            or request.path in ('/logout', '/login')\n        )\n        if _need_csrf and request.method not in ('GET', 'HEAD', 'OPTIONS'):\n            if not check_csrf():\n                if request.path.startswith('/api/'):\n                    return jsonify({'success': False, 'error': 'csrf'}), 400\n                return redirect(url_for('login_page'))\n        return None",
+     "optional": true},
+
+    {"type": "replace", "path": "tamplates/login.html",
+     "find": "    <form method=\"post\" action=\"{{ url_for('login_page') }}\" autocomplete=\"off\">",
+     "content": "    <form method=\"post\" action=\"{{ url_for('login_page') }}\" autocomplete=\"off\">\n        <input type=\"hidden\" name=\"csrf_token\" value=\"{{ csrf_token }}\">",
+     "optional": true},
+
+    {"type": "replace", "path": "app.py",
+     "find": "        _audit(db, u, 'create' if created else 'update', 'log', log_id_raw or created,\n               {'employee_id': employee_id, 'task_id': task_id,\n                'date': date_str, 'hours': hours, 'status': status})\n        try:\n            app.config['PLUGIN_REGISTRY'].emit('on_log_save', user=u,\n                                                log_id=created, created=created)\n        except Exception:\n            pass",
+     "content": "        _created_flag = isinstance(created, int) and not isinstance(created, bool)\n        _hook_log_id = int(created) if _created_flag else int(log_id_raw or 0)\n        _audit(db, u, 'create' if _created_flag else 'update', 'log', _hook_log_id,\n               {'employee_id': employee_id, 'task_id': task_id,\n                'date': date_str, 'hours': hours, 'status': status})\n        try:\n            app.config['PLUGIN_REGISTRY'].emit('on_log_save', user=u,\n                                                log_id=_hook_log_id, created=_created_flag)\n        except Exception:\n            pass",
+     "optional": true},
+
+    {"type": "replace", "path": "app.py",
+     "find": "        elif log_days > 3650:\n            log_days = 3650",
+     "content": "        elif log_days > 730:\n            log_days = 730",
+     "optional": true},
+
+    {"type": "replace", "path": "app.py",
+     "find": "    }\n    pass\n    t = db.query_one('SELECT * FROM tasks WHERE id=?', (task_id,))",
+     "content": "    }\n    t = db.query_one('SELECT * FROM tasks WHERE id=?', (task_id,))",
+     "optional": true},
+
+    {"type": "replace", "path": "app.py",
+     "find": "        emps_ids = {e['id'] for e in emps}\n        matrix = {}\n        for l in data['log']:\n            ldate = l.get('date', '')\n            if not ldate or ldate < date_from or ldate > date_to:\n                continue\n            eid = l.get('employee_id')\n            if eid not in emps_ids:\n                continue\n            matrix.setdefault(eid, {})\n            matrix[eid][ldate] = matrix[eid].get(ldate, 0.0) + float(l.get('hours', 0) or 0)",
+     "content": "        emps_ids = {e['id'] for e in emps}\n        try:\n            _ifu_hm = str(db.get_setting('stats_ignore_future', '1')) != '0'\n        except Exception:\n            _ifu_hm = True\n        matrix = {}\n        for l in data['log']:\n            ldate = l.get('date', '')\n            if not ldate or ldate < date_from or ldate > date_to:\n                continue\n            if _ifu_hm and ldate > today:\n                continue\n            eid = l.get('employee_id')\n            if eid not in emps_ids:\n                continue\n            matrix.setdefault(eid, {})\n            matrix[eid][ldate] = matrix[eid].get(ldate, 0.0) + float(l.get('hours', 0) or 0)",
+     "optional": true},
+
+    {"type": "replace", "path": "app.py",
+     "find": "        unread = sum(1 for r in rows if not r.get('read_at'))\n        return jsonify({'success': True, 'items': rows, 'unread': unread, 'show': _show})",
+     "content": "        unread = sum(1 for r in rows if not r.get('read_at'))\n        try:\n            _cnt = db.query_one(\n                \"SELECT COUNT(*) AS n FROM notifications WHERE to_user_id=? AND TRIM(COALESCE(read_at,''))=''\",\n                (u['id'],),\n            )\n            _unread_total = int((_cnt or {}).get('n', 0))\n        except Exception:\n            _unread_total = unread\n        return jsonify({'success': True, 'items': rows,\n                        'unread': _unread_total,\n                        'unread_in_page': unread,\n                        'show': _show})",
+     "optional": true},
+
+    {"type": "replace", "path": "app.py",
+     "find": "def _parse_ym(ym):\n    try:\n        y, m = ym.split('-')\n        return int(y), int(m)\n    except Exception:\n        t = date.today()\n        return t.year, t.month",
+     "content": "def _parse_ym(ym):\n    try:\n        y, m = ym.split('-')\n        yi, mi = int(y), int(m)\n        if yi < 1970 or yi > 2200:\n            raise ValueError('year out of range')\n        if mi < 1 or mi > 12:\n            raise ValueError('month out of range')\n        return yi, mi\n    except Exception:\n        t = date.today()\n        return t.year, t.month",
+     "optional": true},
+
+    {"type": "replace", "path": "plugins/updater.py",
+     "find": "        _skip_rsn = p.get('_skip_reason')\n        if _skip_rsn:\n            entry['warning'] = _skip_rsn\n            out.append(entry)\n            continue",
+     "content": "        _skip_rsn = p.get('_skip_reason')\n        if _skip_rsn:\n            entry['ok'] = False\n            entry['warning'] = _skip_rsn\n            entry['error'] = 'пропущен: ' + _skip_rsn\n            out.append(entry)\n            continue",
+     "optional": true},
+
+    {"type": "replace", "path": "plugins/updater.py",
+     "find": "            return jsonify({\n                'success': True,\n                'applied_count': len(pending),\n                'total_count': len(pending),\n                'new_version': new_v,\n                'output': apply_out,\n            })",
+     "content": "            return jsonify({\n                'success': True,\n                'applied_count': len(applied_now) or len(pending),\n                'total_count': len(pending),\n                'new_version': new_v,\n                'output': apply_out,\n            })",
+     "optional": true},
+
+    {"type": "replace", "path": "plugins/daily_report.py",
+     "find": "        } for e in employees if not e.get('fired_date')]",
+     "content": "        } for e in employees if not e.get('fired')]",
+     "optional": true},
+
+    {"type": "replace", "path": "plugins/weekly_summary_widget.py",
+     "find": "    norm_total = _norm_per_day_ws * max(1, len(hours_by_emp))\n    avg_load = 0\n    if norm_total > 0:\n        avg_load = round((hours_total / norm_total) * 100)",
+     "content": "    _active_emps = [e for e in data.get('employees', []) if not e.get('fired')]\n    _n_emps = max(1, len(_active_emps))\n    norm_total = _norm_per_day_ws * _n_emps\n    avg_load = 0\n    if norm_total > 0:\n        avg_load = round((hours_total / norm_total) * 100)",
+     "optional": true},
+
+    {"type": "replace", "path": "requirements.txt",
+     "find": "openpyxl>3.1",
+     "content": "openpyxl>=3.1",
+     "optional": true}
+
+  ]
+}
