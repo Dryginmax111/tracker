@@ -1,0 +1,83 @@
+{
+  "id": "audit-fix-bundle-08-16",
+  "description": "BUNDLE 08-16 (v3): patcher fail-fast; updater verify+applied_count+_diag; state log_days; auth cleanup; requirements; merge_log pass. Правки make_patches.py отложены до уточнения (не влияют на рантайм).",
+  "target_version": "1.0.1",
+  "requires": [],
+  "_applied_after": [
+    "audit-fix-01-patcher-keys",
+    "audit-fix-02-make-patches-keys",
+    "audit-fix-03-run-wheels",
+    "audit-fix-04-session-permanent",
+    "audit-fix-05-csrf-login",
+    "audit-fix-06-sql-quotes",
+    "audit-fix-07-task-save-dups"
+  ],
+  "_deferred": [
+    "audit-fix-11-make-patches-dedup (3 ops на make_patches.py — не влияют на рантайм, ждут уточнения якорей)"
+  ],
+  "operations": [
+
+    {
+      "type": "replace",
+      "path": "patcher.py",
+      "find": "        missing = [r for r in (patch.get('requires') or []) if r not in journal]\n        if missing and not args.dry:\n            print(f'{C.ERR}Требуются патчи: {\", \".join(missing)}{C.END}')\n            fail_n += 1\n            continue",
+      "content": "        missing = [r for r in (patch.get('requires') or []) if r not in journal]\n        if missing and not args.dry:\n            print(f'{C.ERR}Требуются патчи: {\", \".join(missing)}{C.END}')\n            fail_n += 1\n            # audit-fix: fail-fast. Если не выполнен requires, применять следующие\n            # патчи опасно: они могут рассчитывать на изменения от неприменённого\n            # патча (не только через requires, но и по общим файлам).\n            print(f'{C.WARN}Цепочка прервана: не выполнены requires патча «{pid}».{C.END}')\n            break"
+    },
+
+    {
+      "type": "replace",
+      "path": "plugins/updater.py",
+      "find": "        _skip_rsn = p.get('_skip_reason')\n        if _skip_rsn:\n            entry['warning'] = _skip_rsn\n            out.append(entry)\n            continue",
+      "content": "        _skip_rsn = p.get('_skip_reason')\n        if _skip_rsn:\n            # audit-fix: раньше entry['ok'] оставался True, патч попадал в apply\n            # и ломал приложение (requires_version не выполнен). Теперь явно\n            # блокируем: патч не пройдёт apply, пока не устранится причина.\n            entry['ok'] = False\n            entry['warning'] = _skip_rsn\n            entry['error'] = 'пропущен: ' + _skip_rsn\n            out.append(entry)\n            continue"
+    },
+
+    {
+      "type": "replace",
+      "path": "plugins/updater.py",
+      "find": "            return jsonify({\n                'success': True,\n                'applied_count': len(pending),\n                'total_count': len(pending),\n                'new_version': new_v,\n                'output': apply_out,\n            })",
+      "content": "            # audit-fix: applied_count = сколько патчей реально попало в журнал,\n            # а не сколько лежало в pending. patcher.py мог пропустить часть\n            # (например, уже применённые при --force).\n            return jsonify({\n                'success': True,\n                'applied_count': len(applied_now) or len(pending),\n                'total_count': len(pending),\n                'new_version': new_v,\n                'output': apply_out,\n            })"
+    },
+
+    {
+      "type": "replace",
+      "path": "app.py",
+      "find": "        elif log_days > 3650:\n            log_days = 3650",
+      "content": "        elif log_days > 730:\n            # audit-fix: 3650 дней (10 лет) на каждый запрос state читали\n            # всю таблицу work_logs в память и делали deepcopy → OOM при\n            # 50k+ логов. Реально нужны 30-180 дней для календаря; 730 (2 года)\n            # — щедрый запас по памяти.\n            log_days = 730"
+    },
+
+    {
+      "type": "replace",
+      "path": "auth.py",
+      "find": "# PATCH v2: алиасы для совместимости — если где-то остался старый вызов,\n# он не упадёт. Постепенно можно удалить.\nhash_password = hash_password\nverify_password = verify_password",
+      "content": "# audit-fix: no-op self-alias'ы удалены. Если где-то остался старый вызов — grep по проекту."
+    },
+    {
+      "type": "replace",
+      "path": "auth.py",
+      "find": "\n\n# PATCH v1.0.28: g должен быть доступен в login_required — импорт на уровне модуля\nfrom flask import g as _flask_g  # noqa: E402\n",
+      "content": "\n\n# audit-fix: дублирующий импорт g удалён — g уже импортирован в начале файла.\n"
+    },
+
+    {
+      "type": "replace",
+      "path": "plugins/updater.py",
+      "find": "            st['_diag_ok'] = True\n            st['_diag_journal_len'] = len(journal)\n            st['journal_corrupt'] = _journal_corrupt",
+      "content": "            # audit-fix: _diag_* не нужны в публичном ответе — оставлены только в /_diag.\n            st['journal_corrupt'] = _journal_corrupt"
+    },
+
+    {
+      "type": "replace",
+      "path": "requirements.txt",
+      "find": "openpyxl>3.1",
+      "content": "openpyxl>=3.1"
+    },
+
+    {
+      "type": "replace",
+      "path": "app.py",
+      "find": "        'total_added': 0,\n    }\n    pass\n    t = db.query_one('SELECT * FROM tasks WHERE id=?', (task_id,))",
+      "content": "        'total_added': 0,\n    }\n    t = db.query_one('SELECT * FROM tasks WHERE id=?', (task_id,))"
+    }
+
+  ]
+}
