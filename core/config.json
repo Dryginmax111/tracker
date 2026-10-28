@@ -8,6 +8,6 @@
   "open_browser": true,
   "net_update": {
     "enabled": true,
-    "share_path": "tracker_patches_new"
+    "share_path": "patches"
   }
 }
