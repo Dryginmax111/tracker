@@ -187,3 +187,63 @@
         }
     }, true);
 })();
+
+/* ============================================================
+   PATCH v1.4.3 — гарантированный перенос #taskHypothesesGroup
+   из .task-modal-grid в .task-modal-scroll (на всю ширину).
+   Старый v1.1.3 fixHyp искал несуществующий #hypTreeGroup.
+   ============================================================ */
+(function(){
+    'use strict';
+    if (window.__trkHypFullWidthV143) return;
+    window.__trkHypFullWidthV143 = true;
+
+    function _moveHypGroup(){
+        var modal = document.getElementById('taskModal');
+        if (!modal || !modal.classList.contains('active')) return;
+        var group = document.getElementById('taskHypothesesGroup');
+        if (!group) return;
+        var scroll = modal.querySelector('.modal-content > .task-modal-scroll')
+                  || modal.querySelector('.modal-content');
+        var grid = modal.querySelector('.task-modal-grid');
+        if (!scroll) return;
+        if (grid && group.parentNode !== grid.parentNode) {
+            grid.parentNode.insertBefore(group, grid.nextSibling);
+        }
+        group.style.setProperty('width', '100%', 'important');
+        group.style.setProperty('max-width', '100%', 'important');
+        group.style.setProperty('box-sizing', 'border-box', 'important');
+        group.classList.add('trk-hyp-fullwidth-v143');
+    }
+
+    function _watch(){
+        var modal = document.getElementById('taskModal');
+        if (!modal || modal._hypFullV143Obs) return;
+        modal._hypFullV143Obs = true;
+        new MutationObserver(function(){
+            if (modal.classList.contains('active')) {
+                setTimeout(_moveHypGroup, 60);
+                setTimeout(_moveHypGroup, 200);
+                setTimeout(_moveHypGroup, 500);
+            }
+        }).observe(modal, { attributes: true, attributeFilter: ['class'] });
+    }
+
+    _watch();
+    setTimeout(_watch, 500);
+    setTimeout(_watch, 1500);
+    setTimeout(_watch, 3000);
+
+    document.addEventListener('click', function(e){
+        if (!e.target || !e.target.closest) return;
+        if (e.target.closest('#addTaskBtn') ||
+            e.target.closest('#addTaskBtn2') ||
+            e.target.closest('.task-card-clickable') ||
+            e.target.closest('[data-act="edit"]')) {
+            setTimeout(_moveHypGroup, 200);
+            setTimeout(_moveHypGroup, 500);
+        }
+    }, true);
+
+    window.__trkMoveHypGroup = _moveHypGroup;
+})();

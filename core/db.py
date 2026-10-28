@@ -83,6 +83,18 @@ class TrackerDB:
             c.executescript(sql)
         finally:
             c.close()
+        # PATCH v1.3.2: миграция — колонка hypotheses_json для дерева
+        # «Проверка -> Гипотезы -> Задания» (добавляется один раз).
+        try:
+            mc = self._make_conn()
+            try:
+                cols = [r[1] for r in mc.execute('PRAGMA table_info(tasks)').fetchall()]
+                if 'hypotheses_json' not in cols:
+                    mc.execute("ALTER TABLE tasks ADD COLUMN hypotheses_json TEXT DEFAULT '[]'")
+            finally:
+                mc.close()
+        except Exception as e:
+            print(f'[db] migrate hypotheses_json failed: {e}')
 
     # ---------------- backoff ----------------
     def _run_with_backoff(self, fn):
@@ -247,6 +259,14 @@ class TrackerDB:
             except Exception:
                 _em = []
             t['extra_meta'] = _em
+            # PATCH v1.3.2: hypotheses_json -> дерево «Гипотеза -> Задания»
+            try:
+                _hyp = json.loads(t.get('hypotheses_json') or '[]')
+                if not isinstance(_hyp, list):
+                    _hyp = []
+            except Exception:
+                _hyp = []
+            t['hypotheses'] = _hyp
 
         if since:
             logs = self.query(
@@ -338,15 +358,18 @@ class TrackerDB:
         return r is not None
 
     def update_vacation(self, vac_id, emp_id, dfrom, dto, vtype, comment):
-        """v1.1.6: редактирование периода отпуска/командировки."""
-        cur = self.exec(
-            'UPDATE employee_vacations SET date_from=?, date_to=?, vtype=?, comment=? '
-            'WHERE id=? AND employee_id=?',
-            (dfrom, dto, vtype, comment, vac_id, emp_id))
-        try:
-            return cur.rowcount > 0
-        except Exception:
-            return True
+        """v1.1.6: редактирование периода отпуска/командировки.
+
+        PATCH v1.0.3: self.exec() возвращает lastrowid (int), а не cursor.
+        Прежний cur.rowcount бросал AttributeError, ловился и возвращал True
+        даже если emp_id не совпадал. Используем транзакцию с реальным cursor.
+        """
+        with self.transaction() as tx:
+            cur = tx.exec(
+                'UPDATE employee_vacations SET date_from=?, date_to=?, vtype=?, comment=? '
+                'WHERE id=? AND employee_id=?',
+                (dfrom, dto, vtype, comment, vac_id, emp_id))
+            return (cur.rowcount or 0) > 0
 
     # ---------------- departments ----------------
     def upsert_department(self, dep_id, name, color, head_employee_id=''):
@@ -403,29 +426,31 @@ class TrackerDB:
     # ---------------- tasks ----------------
     def upsert_task(self, task_id, payload):
         row = self.query_one('SELECT id FROM tasks WHERE id=?', (task_id,))
+        # PATCH v1.3.2: дерево гипотез сохраняется целиком (не отдельными блоками)
+        _hyp_json = json.dumps(payload.get('hypotheses') or [], ensure_ascii=False)
         with self.transaction() as tx:
             if row:
                 _links_json = json.dumps(payload.get('links') or [], ensure_ascii=False)
                 _orders_json = json.dumps(payload.get('orders') or [], ensure_ascii=False)
                 tx.exec(
                     'UPDATE tasks SET name=?, icon=?, description=?, status=?, start_date=?, '
-                    'deadline=?, completed_at=?, folder=?, order_ref=?, is_urgent=?, links_json=?, orders_json=? WHERE id=?',
+                    'deadline=?, completed_at=?, folder=?, order_ref=?, is_urgent=?, links_json=?, orders_json=?, hypotheses_json=? WHERE id=?',
                     (payload['name'], payload['icon'], payload['description'], payload['status'],
                      payload['start_date'], payload['deadline'], payload['completed_at'],
                      payload['folder'], payload['order_ref'],
-                     1 if payload.get('is_urgent') else 0, _links_json, _orders_json, task_id))
+                     1 if payload.get('is_urgent') else 0, _links_json, _orders_json, _hyp_json, task_id))
                 created = False
             else:
                 _links_json = json.dumps(payload.get('links') or [], ensure_ascii=False)
                 _orders_json = json.dumps(payload.get('orders') or [], ensure_ascii=False)
                 tx.exec(
                     'INSERT INTO tasks (id,name,icon,description,status,start_date,deadline,'
-                    'completed_at,folder,order_ref,is_urgent,links_json,orders_json,created_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)',
+                    'completed_at,folder,order_ref,is_urgent,links_json,orders_json,hypotheses_json,created_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)',
                     (task_id, payload['name'], payload['icon'], payload['description'],
                      payload['status'], payload['start_date'], payload['deadline'],
                      payload['completed_at'], payload['folder'], payload['order_ref'],
                      1 if payload.get('is_urgent') else 0, _links_json, _orders_json,
-                     payload['created_at']))
+                     _hyp_json, payload['created_at']))
                 created = True
             tx.exec('DELETE FROM task_tags WHERE task_id=?', (task_id,))
             for tag in payload['tags']:
@@ -461,21 +486,23 @@ class TrackerDB:
         _edj = payload.get('extra_data_json') or '[]'
         _odj = payload.get('orders_json') or '[]'
         _lnj = payload.get('links_json') or '[]'
+        # PATCH v1.5.0: привязка к гипотезе/заданию
+        _hyp = payload.get('hyp_item_id') or ''
         if log_id:
             self.exec(
                 'UPDATE work_logs SET employee_id=?, task_id=?, date=?, hours=?, comment=?, '
-                'status=?, link=?, extra_data_json=?, orders_json=?, links_json=?, updated_at=? WHERE id=?',
+                'status=?, link=?, extra_data_json=?, orders_json=?, links_json=?, hyp_item_id=?, updated_at=? WHERE id=?',
                 (payload['employee_id'], payload['task_id'], payload['date'], payload['hours'],
                  payload['comment'], payload['status'], payload['link'],
-                 _edj, _odj, _lnj, now, log_id))
+                 _edj, _odj, _lnj, _hyp, now, log_id))
             return False
         new_id = self.exec(
             'INSERT INTO work_logs (employee_id,task_id,date,hours,comment,status,link,'
-            'extra_data_json,orders_json,links_json,created_at) '
-            'VALUES (?,?,?,?,?,?,?,?,?,?,?)',
+            'extra_data_json,orders_json,links_json,hyp_item_id,created_at) '
+            'VALUES (?,?,?,?,?,?,?,?,?,?,?,?)',
             (payload['employee_id'], payload['task_id'], payload['date'], payload['hours'],
              payload['comment'], payload['status'], payload['link'],
-             _edj, _odj, _lnj, now))
+             _edj, _odj, _lnj, _hyp, now))
         return new_id
 
     def delete_log(self, log_id):
@@ -488,11 +515,19 @@ class TrackerDB:
         now = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
         with self.transaction() as tx:
             for r in rows:
+                # PATCH v1.5.0: переносим JSON-поля и hyp_item_id («Как вчера»
+                # раньше терял extra/orders/links — теперь сохраняет всё)
                 tx.exec(
-                    'INSERT INTO work_logs (employee_id,task_id,date,hours,comment,status,link,created_at) '
-                    'VALUES (?,?,?,?,?,?,?,?)',
+                    'INSERT INTO work_logs (employee_id,task_id,date,hours,comment,status,link,'
+                    'extra_data_json,orders_json,links_json,hyp_item_id,created_at) '
+                    'VALUES (?,?,?,?,?,?,?,?,?,?,?,?)',
                     (r['employee_id'], r['task_id'], dst, r['hours'], r['comment'],
-                     r['status'], r['link'], now))
+                     r['status'], r['link'],
+                     r.get('extra_data_json') or '[]',
+                     r.get('orders_json') or '[]',
+                     r.get('links_json') or '[]',
+                     r.get('hyp_item_id') or '',
+                     now))
         return len(rows)
 
     def clear_day_logs(self, dk, emp_filter):

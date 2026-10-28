@@ -338,6 +338,23 @@ def register(app, db, hooks):
 
     @app.route('/api/plugins/weekly_summary/data', methods=['GET'])
     def _wsw_data():
+        # PATCH v1.0.1: эндпоинт был открыт без авторизации — раскрывал топ-5
+        # сотрудников по часам, общую загрузку и число просрочек.
+        try:
+            from auth import current_user, user_has
+            u = current_user(db)
+            if not u:
+                return app.response_class(
+                    json.dumps({'success': False, 'error': 'auth'}),
+                    mimetype='application/json', status=401)
+            if not (user_has(db, u, 'tab.calendar') or user_has(db, u, 'tab.summary')):
+                return app.response_class(
+                    json.dumps({'success': False, 'error': 'forbidden'}),
+                    mimetype='application/json', status=403)
+        except Exception:
+            return app.response_class(
+                json.dumps({'success': False, 'error': 'auth'}),
+                mimetype='application/json', status=401)
         try:
             payload = _collect_stats(db)
         except Exception as e:

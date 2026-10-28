@@ -1,0 +1,1 @@
+"c:\Users\Maxim\Downloads\tracker-main_2\tracker-main\runtime\embedded\python313\python.exe" "c:\Users\Maxim\Downloads\tracker-main_2\tracker-main\core\patcher.py" --rollback v1.1.1_updater_modal_scroll.json

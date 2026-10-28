@@ -159,6 +159,7 @@
             <div class="segmented" id="tskViewSeg" title="Вид отображения задач">
                 <button type="button" data-view="tile" title="Плитка">▢ Плитка</button>
                 <button type="button" data-view="compact" title="Компактные плитки">☰ Компактно</button>
+                <button type="button" data-view="tree" title="Компактные плитки с деревом гипотез">🧪 Дерево</button>
                 <button type="button" data-view="list" title="Список (как в Справочниках)">📋 Список</button>
             </div>
             <label class="sum-filter tsk-cols-wrap" id="tskColsWrap" title="Сколько колонок в плитке">
@@ -342,8 +343,11 @@
 </div>
 
 <!-- ================= МОДАЛКИ ================= -->
-<div class="modal" id="employeeModal"><div class="modal-content">
-    <h2 id="employeeModalTitle">Новый сотрудник</h2>
+<div class="modal" id="employeeModal"><div class="modal-content emp-modal-fixed">
+    <div class="emp-modal-header" id="employeeModalHeader">
+        <h2 id="employeeModalTitle">Карточка сотрудника</h2>
+    </div>
+    <div class="emp-modal-body">
     <input type="hidden" id="emp_id">
     <div class="form-group"><label>Имя *</label><input type="text" id="emp_name" maxlength="100"></div>
     <div class="form-row">
@@ -353,9 +357,13 @@
         </div>
         <div class="form-group">
             <label>Должность</label>
+            <select id="emp_role_select">
+                <option value="">— выберите должность —</option>
+            </select>
             <input type="text" id="emp_role" maxlength="50" list="emp_role_list"
                    autocomplete="off" placeholder="Выберите или введите новую">
             <datalist id="emp_role_list"></datalist>
+            <div class="assignees-hint" id="empRoleHint">Список формируется из должностей, уже указанных у сотрудников.</div>
         </div>
     </div>
     <div class="form-group"><label>🏢 Отдел</label><select id="emp_department_select"><option value="">— не указан —</option></select></div>
@@ -395,7 +403,8 @@
         <input type="text" id="vac_comment" placeholder="Комментарий" maxlength="200"
                style="margin-top:4px;padding:6px 10px;border:1px solid var(--trk-input-border);border-radius:8px;background:var(--trk-input-bg);color:var(--trk-text);font-size:0.82rem;outline:none;font-family:inherit;">
     </div>
-    <div class="modal-actions">
+    </div>
+    <div class="modal-actions emp-modal-footer">
         <button class="btn btn-primary" id="saveEmployeeBtn">💾 Сохранить</button>
         <button class="btn btn-secondary" data-close="employeeModal">Закрыть</button>
     </div>
@@ -500,6 +509,12 @@
         <div class="assignees-list" id="taskAssigneesList"></div>
         <div class="assignees-hint" id="taskAssigneesHint"></div>
     </div>
+    <div class="form-group" id="taskHypothesesGroup">
+        <label>🧪 Гипотезы и задания проверки <span class="hyp-count-badge" id="hypCountBadge">0</span></label>
+        <div class="assignees-hint">Название задачи = «Проверка». Кнопкой «➕ Гипотеза» добавляются гипотезы (название, описание, период, ответственные), внутри каждой гипотезы — задания. Всё дерево сохраняется вместе с задачей.</div>
+        <div id="hypTreeRoot" class="hyp-tree"></div>
+        <button type="button" class="btn btn-secondary" id="hypAddBtn" style="align-self:flex-start;margin-top:6px;padding:6px 14px;font-size:0.82rem;">➕ Добавить гипотезу</button>
+    </div>
     <div class="modal-actions">
         <button class="btn btn-primary" id="saveTaskBtn">💾 Сохранить</button>
         <button class="btn btn-secondary" data-close="taskModal">Закрыть</button>
@@ -561,6 +576,7 @@
             </div>
             <div class="day-list" id="logDayExistingList" style="margin-bottom:0;"></div>
         </div>
+        <div id="logAssignedWrap"></div>
         <div class="form-row log-row-4">
             <div class="form-group"><label>📅 Дата *</label><input type="date" id="log_date"></div>
             <div class="form-group"><label>⏱ Часы</label><input type="text" id="log_hours" value="08:00" placeholder="ЧЧ:ММ" maxlength="5" autocomplete="off" inputmode="numeric"></div>
@@ -586,6 +602,11 @@
             </div>
             <button type="button" class="log-create-task-btn" id="logCreateTaskBtn" title="Создать новую задачу">➕ Новая задача</button>
            
+        </div>
+        <div class="form-group" id="logHypGroup" style="display:none;">
+            <label>🧪 Гипотеза / задание</label>
+            <select id="log_hyp_item"><option value="">— не привязано —</option></select>
+            <div class="assignees-hint">Опционально: привязать отметку к гипотезе или заданию задачи. Полезно, когда в задаче несколько гипотез и нужно видеть, по какой именно шла работа.</div>
         </div>
         <div class="form-group log-desc-group">
             <label>📝 Описание</label>

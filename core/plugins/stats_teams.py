@@ -1,6 +1,3 @@
-# PATCH 1.0.5: флаг «не учитывать отметки на будущее»
-_STATS_IGNORE_FUTURE = True
-
 """plugins/stats_teams.py — Статистика: Отделы (верхний уровень) + Команды (как раньше)."""
 
 __version__ = '4.0'
@@ -61,7 +58,7 @@ def _workdays_between(d1, d2):
     return n
 
 
-def _emp_stats(data, emp_ids, d1, d2):
+def _emp_stats(data, emp_ids, d1, d2, ignore_future=True):
     today = _iso(date.today())
     logs = data.get('log', [])
     all_assignees = {}
@@ -94,7 +91,7 @@ def _emp_stats(data, emp_ids, d1, d2):
         ld = l.get('date') or ''
         if ld < _iso(d1) or ld > _iso(d2):
             continue
-        if _STATS_IGNORE_FUTURE and ld > today:
+        if ignore_future and ld > today:
             continue
         eid = l.get('employee_id')
         if eid not in per:
@@ -130,7 +127,7 @@ def _emp_stats(data, emp_ids, d1, d2):
     return per
 
 
-def _compute_extras(data, emp_ids, d1, d2):
+def _compute_extras(data, emp_ids, d1, d2, ignore_future=True):
     from datetime import datetime as _dt
     tasks = {t['id']: t for t in data.get('tasks', [])}
     logs = data.get('log', [])
@@ -149,7 +146,7 @@ def _compute_extras(data, emp_ids, d1, d2):
         ld = l.get('date') or ''
         if ld < start_iso or ld > end_iso:
             continue
-        if _STATS_IGNORE_FUTURE and ld > _iso(date.today()):
+        if ignore_future and ld > _iso(date.today()):
             continue
         t = tasks.get(l.get('task_id'))
         if not t:
@@ -203,9 +200,9 @@ def _compute_extras(data, emp_ids, d1, d2):
     return {'on_time_pct': on_time_pct, 'cycle_avg_days': cycle_avg, 'trend': trend}
 
 
-def _aggregate(data, name, emp_ids, d1, d2, prev=None, extra=None):
+def _aggregate(data, name, emp_ids, d1, d2, prev=None, extra=None, ignore_future=True):
     """Универсальный агрегатор для команды и отдела."""
-    per = _emp_stats(data, emp_ids, d1, d2)
+    per = _emp_stats(data, emp_ids, d1, d2, ignore_future=ignore_future)
     wd = _workdays_between(d1, d2)
     total_hours = 0.0
     total_done = 0
@@ -230,7 +227,7 @@ def _aggregate(data, name, emp_ids, d1, d2, prev=None, extra=None):
     ranking_done = sorted([dict(meta(eid), tasks_done=st['tasks_done']) for eid, st in per.items() if st['tasks_done'] > 0], key=lambda x: -x['tasks_done'])[:3]
     ranking_coverage = sorted([dict(meta(eid), coverage=round(100 * st['active_days'] / wd) if wd else 0) for eid, st in per.items()], key=lambda x: -x['coverage'])[:3]
 
-    extras = _compute_extras(data, emp_ids, d1, d2)
+    extras = _compute_extras(data, emp_ids, d1, d2, ignore_future=ignore_future)
 
     def _delta(cur, prv):
         try:
@@ -905,11 +902,10 @@ def register(app, db, hooks):
         d1, d2, preset = _period_from_args()
         prev_start, prev_end = _prev_period(d1, d2)
         data = db.load_all()
-        global _STATS_IGNORE_FUTURE
         try:
-            _STATS_IGNORE_FUTURE = str(db.get_setting('stats_ignore_future', '1')) != '0'
+            _ignore_future = str(db.get_setting('stats_ignore_future', '1')) != '0'
         except Exception:
-            _STATS_IGNORE_FUTURE = True
+            _ignore_future = True
 
         all_teams = data.get('teams', [])
         all_depts = data.get('departments', [])
@@ -944,8 +940,8 @@ def register(app, db, hooks):
                     emp_ids.add(m)
             dept_id = team_to_dept.get(tm['id'], '')
             dept = depts_by_id.get(dept_id) or {}
-            prev_agg = _aggregate(data, tm.get('name', ''), emp_ids, prev_start, prev_end) if emp_ids else None
-            agg = _aggregate(data, tm.get('name', ''), emp_ids, d1, d2, prev=prev_agg, extra={
+            prev_agg = _aggregate(data, tm.get('name', ''), emp_ids, prev_start, prev_end, ignore_future=_ignore_future) if emp_ids else None
+            agg = _aggregate(data, tm.get('name', ''), emp_ids, d1, d2, prev=prev_agg, ignore_future=_ignore_future, extra={
                 'team_id': tm['id'],
                 'team_name': tm.get('name', ''),
                 'manager_id': tm.get('manager_id', ''),
@@ -974,8 +970,8 @@ def register(app, db, hooks):
                         if m:
                             emp_ids.add(m)
 
-            prev_agg = _aggregate(data, dep.get('name', ''), emp_ids, prev_start, prev_end) if emp_ids else None
-            agg = _aggregate(data, dep.get('name', ''), emp_ids, d1, d2, prev=prev_agg, extra={
+            prev_agg = _aggregate(data, dep.get('name', ''), emp_ids, prev_start, prev_end, ignore_future=_ignore_future) if emp_ids else None
+            agg = _aggregate(data, dep.get('name', ''), emp_ids, d1, d2, prev=prev_agg, ignore_future=_ignore_future, extra={
                 'department_id': did,
                 'department_name': dep.get('name', ''),
                 'department_color': dep.get('color', '#f5d76e'),
@@ -991,7 +987,7 @@ def register(app, db, hooks):
 
         # Итоговые KPI
         all_emp_ids = set(e['id'] for e in all_emps if not e.get('fired'))
-        summary_agg = _aggregate(data, 'Все', all_emp_ids, d1, d2) if all_emp_ids else {
+        summary_agg = _aggregate(data, 'Все', all_emp_ids, d1, d2, ignore_future=_ignore_future) if all_emp_ids else {
             'total_hours': 0, 'total_done': 0, 'total_overdue': 0, 'coverage': 0,
             'active_members': 0, 'members_count': 0
         }

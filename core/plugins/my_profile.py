@@ -564,6 +564,8 @@ function renderQuota(){
 
 // === Мультиселекты ===
 function renderMulti(elId, dropId, cntId, items, selected, onChange) {
+    if (!Array.isArray(items)) items = [];
+    if (!Array.isArray(selected)) selected = [];
     var drop = document.getElementById(dropId);
     var cnt = document.getElementById(cntId);
     var html = '';
@@ -609,6 +611,7 @@ document.addEventListener('click', function(){
 function renderHeatmap(){
     var d=state.data;if(!d||!d.heatmap)return;
     var hm=d.heatmap;
+    window._TT_DATA = {};
     var box=document.getElementById('vacHeatmap');
     document.getElementById('hmTitle').textContent=hm.period_label||'—';
     
@@ -669,9 +672,10 @@ function renderHeatmap(){
         ttEl.className = 'hm-tooltip';
         document.body.appendChild(ttEl);
     }
+    if(!window._TT_DATA) window._TT_DATA = {};
     box.querySelectorAll('.hm-pill').forEach(function(el){
         var ttId = el.getAttribute('data-tt');
-        var html = window._TT_DATA[ttId];
+        var html = (window._TT_DATA || {})[ttId];
         if (!html) return;
         el.addEventListener('mouseenter', function(e){ ttEl.innerHTML = html; ttEl.style.display = 'block'; ttEl.style.left = (e.clientX + 15) + 'px'; ttEl.style.top = (e.clientY + 15) + 'px'; });
         el.addEventListener('mousemove', function(e){ ttEl.style.left = (e.clientX + 15) + 'px'; ttEl.style.top = (e.clientY + 15) + 'px'; });
@@ -724,7 +728,7 @@ function loadData(){
                 renderMulti('teamWrap', 'teamDrop', 'teamCnt', d.heatmap.filters.teams, state.hmTeams||[], function(){ loadData(); });
             }
         })
-        .catch(function(e){console.error(e);alert('Ошибка соединения');});
+        .catch(function(e){console.error('[mp] loadData error:',e);var _m=(window.__trkLastError||(e&&e.message)||'неизвестно');alert('Ошибка: '+_m);});
 }
 
 // === События ===
@@ -1604,7 +1608,25 @@ def register(app, db, hooks):
             if used + add_days > quota:
                 warnings.append(f"⚠ Превышение нормы за {year}: было {used}, добавляется {add_days} (норма {quota})")
         except Exception: pass
-        return warnings
+        # PATCH v1.0.40: дедупликация. Коллега, который и в отделе, и в команде,
+        # попадал в оба списка. Нормализуем по (ФИО, from, to) — тип (⚠ Команда /
+        # Коллега по отделу) отбрасываем, семантически это один отпуск.
+        _seen = set()
+        _out = []
+        import re as _re_ded
+        for _w in warnings:
+            _m = _re_ded.search(r'[：:]\s*(.+?)\s*\(([^)]+)\)', _w)
+            _key = ''
+            if _m:
+                _fio = (_m.group(1) or '').strip().lower()
+                _period = (_m.group(2) or '').strip()
+                _key = _fio + '|' + _period
+            if _key and _key in _seen:
+                continue
+            if _key:
+                _seen.add(_key)
+            _out.append(_w)
+        return _out
 
     @app.route('/plugins/my_profile/', methods=['GET'])
     def _mp_page():
@@ -1740,6 +1762,9 @@ def register(app, db, hooks):
             year = int(body.get('year')); quota = int(body.get('quota'))
         except (ValueError, TypeError):
             return jsonify({'success': False, 'error': 'Некорректные year/quota'}), 400
+        # PATCH v1.0.33: раньше year=9999 создавал мусорные ключи в settings.
+        if year < 2000 or year > 2100:
+            return jsonify({'success': False, 'error': 'year вне 2000..2100'}), 400
         if quota < 0 or quota > 365:
             return jsonify({'success': False, 'error': 'quota вне 0..365'}), 400
         db.set_setting(f'vacation_quota_{year}_{emp_id}', str(quota))
@@ -1934,8 +1959,836 @@ def register(app, db, hooks):
         parsed['success'] = True
         return jsonify(parsed)
 
+    # ============================================================
+    # PATCH v1.6.0 — импорт гипотез из XLSX
+    # ============================================================
+    _HYP_IMPORT_JS = '''(function(){
+    'use strict';
+    if (window.__trkHypImportV165) return;
+    window.__trkHypImportV165 = true;
+
+    function esc(s){return String(s==null?'':s).replace(/[&<>"']/g,function(c){return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c];});}
+    function fmtI(n){return (Number(n)||0).toLocaleString('ru-RU');}
+
+    function ensurePanel(){
+        var existing = document.getElementById('panel-hyp_import');
+        if (existing) return existing;
+        var mw = document.getElementById('mainWrap');
+        if (!mw) return null;
+        var p = document.createElement('div');
+        p.className = 'panel';
+        p.id = 'panel-hyp_import';
+        p.innerHTML = ''
+            + '<div class="import-box">'
+            +   '<h3>📊 Импорт гипотез из XLSX</h3>'
+            +   '<div class="import-hint">Одна задача на <b>ИД проверки</b>. Каждая строка XLSX = одна гипотеза. Обязательные: <b>ИД проверки</b>, <b>Проверка</b>, <b>ИД гипотезы</b>, <b>Тема гипотезы</b>. Теги: <code>check_&lt;ид&gt;</code> + slug(Карман).</div>'
+            +   '<div class="import-toolbar">'
+            +     '<input type="file" id="hypFile" accept=".xlsx,.xls">'
+            +     '<button type="button" class="btn-sec" id="hypPreviewBtn">🔍 Проверить файл</button>'
+            +     '<button type="button" class="btn-prim" id="hypApplyBtn" disabled>✅ Применить</button>'
+            +   '</div>'
+            +   '<div class="hyp-strategy-row"><span>Стратегия:</span><select id="hypStrategy"><option value="replace">Обновить существующие</option><option value="ignore">Пропустить существующие</option><option value="skip_duplicates">Только дубли</option><option value="fail">Отменить при конфликтах</option></select></div>'
+            +   '<div id="hypMsg" class="msg"></div>'
+            +   '<div id="hypPreviewBox"></div>'
+            + '</div>';
+        mw.appendChild(p);
+        bind();
+        return p;
+    }
+
+    function showPanel(){
+        var p = ensurePanel();
+        if (!p) return;
+        document.querySelectorAll('#mainWrap .panel').forEach(function(x){
+            x.classList.toggle('active', x === p);
+        });
+    }
+
+    function showMsg(text, kind){
+        var el = document.getElementById('hypMsg');
+        if (!el) return;
+        if (!text){ el.className = 'msg'; el.innerHTML = ''; return; }
+        el.className = 'msg ' + (kind || 'ok');
+        el.innerHTML = text;
+    }
+
+    function _addCheckboxes(checks){
+        var box = document.getElementById('hypPreviewBox');
+        if (!box || !box.querySelector('.hyp-card')) return;
+        if (box.querySelector('.hyp-cb-actions')) return;
+        var cards = box.querySelectorAll('.hyp-card');
+        if (!cards.length) return;
+        var total = cards.length;
+        var bar = document.createElement('div');
+        bar.className = 'hyp-cb-actions';
+        bar.innerHTML = '<label><input type="checkbox" id="hypCbAll" checked> Отметить все</label>'
+          + '<button type="button" id="hypCbNone">Снять все</button>'
+          + '<span class="hyp-cb-count">Отмечено: <b id="hypCbCnt">' + total + '</b> из ' + total + '</span>';
+        box.insertBefore(bar, box.firstChild);
+        cards.forEach(function(card, idx){
+            var chk = checks[idx] || {};
+            var cid = chk.check_id != null ? String(chk.check_id) : '';
+            var wrap = document.createElement('label');
+            wrap.className = 'hyp-cb-wrap';
+            var cb = document.createElement('input');
+            cb.type = 'checkbox';
+            cb.className = 'hyp-cb';
+            cb.checked = true;
+            cb.setAttribute('data-check-id', cid);
+            wrap.appendChild(cb);
+            var head = card.querySelector('.hyp-card-head');
+            if (head && head.parentNode === card) card.insertBefore(wrap, head);
+            else card.insertBefore(wrap, card.firstChild);
+            cb.addEventListener('change', _upd);
+        });
+        var cbAll = document.getElementById('hypCbAll');
+        if (cbAll) cbAll.addEventListener('change', function(){
+            var v = this.checked;
+            box.querySelectorAll('.hyp-cb').forEach(function(x){ x.checked = v; });
+            _upd();
+        });
+        var cbNone = document.getElementById('hypCbNone');
+        if (cbNone) cbNone.addEventListener('click', function(){
+            box.querySelectorAll('.hyp-cb').forEach(function(x){ x.checked = false; });
+            _upd();
+        });
+        _upd();
+    }
+
+    function _upd(){
+        var box = document.getElementById('hypPreviewBox');
+        if (!box) return;
+        var all = box.querySelectorAll('.hyp-cb');
+        var total = all.length, checked = 0;
+        all.forEach(function(cb){
+            var card = cb.closest('.hyp-card');
+            if (card) card.classList.toggle('unchk', !cb.checked);
+            if (cb.checked) checked++;
+        });
+        var cnt = document.getElementById('hypCbCnt');
+        if (cnt) cnt.textContent = checked;
+        var cbAll = document.getElementById('hypCbAll');
+        if (cbAll) cbAll.checked = (checked === total);
+    }
+
+    function _attachSelected(fd){
+        var box = document.getElementById('hypPreviewBox');
+        if (!box) return;
+        var sel = [];
+        box.querySelectorAll('.hyp-cb').forEach(function(cb){
+            if (cb.checked) sel.push(cb.getAttribute('data-check-id'));
+        });
+        fd.append('selected_checks', JSON.stringify(sel));
+    }
+
+    function renderPreview(d){
+        var box = document.getElementById('hypPreviewBox');
+        if (!box) return;
+        var s = d.summary || {};
+        var h = '<div class="hyp-summary">'
+              + '<div class="hyp-kpi"><div class="v">' + fmtI(s.tasks_total) + '</div><div class="l">Всего проверок</div></div>'
+              + '<div class="hyp-kpi ok"><div class="v">' + fmtI(s.tasks_new) + '</div><div class="l">Новых задач</div></div>'
+              + '<div class="hyp-kpi warn"><div class="v">' + fmtI(s.tasks_update) + '</div><div class="l">Обновить</div></div>'
+              + '<div class="hyp-kpi ok"><div class="v">' + fmtI(s.hyps_new) + '</div><div class="l">Новых гипотез</div></div>'
+              + '<div class="hyp-kpi warn"><div class="v">' + fmtI(s.hyps_dup) + '</div><div class="l">Конфликтов</div></div>'
+              + '<div class="hyp-kpi err"><div class="v">' + fmtI(s.employees_not_found) + '</div><div class="l">Авторов не найдено</div></div>'
+              + '</div><div class="hyp-list">';
+        (d.checks || []).forEach(function(c){
+            var cls = c.action === 'create' ? 'new' : 'update';
+            h += '<div class="hyp-card ' + cls + '">';
+            h += '<div class="hyp-card-head"><div class="hyp-card-name">' + (c.action === 'create' ? '🆕 ' : '✏️ ') + esc(c.check_name || ('Проверка ' + c.check_id)) + '</div><div class="hyp-card-tag">check_' + esc(c.check_id) + '</div></div>';
+            if (c.karman) h += '<div class="hyp-card-meta">📦 <b>' + esc(c.karman) + '</b></div>';
+            if (c.manager_fio){
+                h += '<div class="hyp-card-meta' + (c.manager_found ? '' : ' miss') + '">👤 Руководитель: ' + esc(c.manager_fio) + (c.manager_found ? '' : ' (не найден)') + '</div>';
+            }
+            h += '<div class="hyp-card-meta">Гипотез: <b>' + c.hypotheses.length + '</b></div>';
+            c.hypotheses.forEach(function(hp){
+                var ico = hp.action === 'create' ? '🆕' : (hp.action === 'update' ? '✏️' : (hp.action === 'skip' ? '⏭' : '❌'));
+                h += '<div class="hyp-row"><span class="ico">' + ico + '</span><span class="title">' + esc(hp.theme || ('Гипотеза ' + hp.hyp_id)) + '</span>';
+                var metas = [];
+                if (hp.author_fio) metas.push('<span class="author' + (hp.author_found ? '' : ' miss') + '">👤 ' + esc(hp.author_fio) + (hp.author_found ? '' : ' ⚠') + '</span>');
+                if (hp.publish_date) metas.push('📅 ' + esc(hp.publish_date));
+                if (hp.raw_status) metas.push('📌 ' + esc(hp.raw_status));
+                if (metas.length) h += '<span class="meta">' + metas.join(' · ') + '</span>';
+                h += '</div>';
+            });
+            h += '</div>';
+        });
+        h += '</div>';
+        box.innerHTML = h;
+        setTimeout(function(){ _addCheckboxes(d.checks || []); }, 60);
+    }
+
+    function _doUpload(mode){
+        var fl = document.getElementById('hypFile');
+        if (!fl || !fl.files || !fl.files[0]){ showMsg('Выберите файл', 'err'); return; }
+        var fd = new FormData();
+        fd.append('file', fl.files[0]);
+        fd.append('mode', mode);
+        fd.append('strategy', (document.getElementById('hypStrategy') || {}).value || 'replace');
+        if (mode === 'apply') _attachSelected(fd);
+        var hdrs = {}; if (window.REESTR_CSRF) hdrs['X-CSRF-Token'] = window.REESTR_CSRF;
+        var pv = document.getElementById('hypPreviewBtn');
+        var ap = document.getElementById('hypApplyBtn');
+        if (mode === 'preview'){ if (pv) pv.disabled = true; showMsg('Проверка файла…', 'warn'); }
+        else { if (ap) ap.disabled = true; showMsg('Импорт…', 'warn'); }
+        fetch('/api/plugins/my_profile/hypotheses/import', {method:'POST', headers:hdrs, credentials:'same-origin', body: fd})
+            .then(function(r){
+                return r.text().then(function(t){
+                    var j = null;
+                    try { j = JSON.parse(t); } catch(e) {}
+                    if (!r.ok || !j){ throw new Error('HTTP ' + r.status + ': ' + t.slice(0, 200)); }
+                    return j;
+                });
+            })
+            .then(function(d){
+                if (mode === 'preview'){
+                    if (pv) pv.disabled = false;
+                    if (!d || !d.success){ showMsg('Ошибка: ' + esc((d && d.error) || '?'), 'err'); return; }
+                    showMsg('Проверка завершена. Снимите галки с ненужных проверок и нажмите «Применить».', 'ok');
+                    renderPreview(d);
+                    if (ap) ap.disabled = false;
+                } else {
+                    if (!d || !d.success){ if (ap) ap.disabled = false; showMsg('Ошибка: ' + esc((d && d.error) || '?'), 'err'); return; }
+                    var s = d.summary || {};
+                    showMsg('✅ Готово. Создано задач: ' + fmtI(s.tasks_created) + ', обновлено: ' + fmtI(s.tasks_updated) + '.', 'ok');
+                }
+            })
+            .catch(function(e){
+                if (pv) pv.disabled = false;
+                if (ap) ap.disabled = false;
+                showMsg('Ошибка: ' + esc(e.message || 'сеть'), 'err');
+            });
+    }
+
+    function bind(){
+        var pv = document.getElementById('hypPreviewBtn');
+        var ap = document.getElementById('hypApplyBtn');
+        if (pv && !pv._hypBind165){ pv._hypBind165 = true; pv.addEventListener('click', function(){ _doUpload('preview'); }); }
+        if (ap && !ap._hypBind165){ ap._hypBind165 = true; ap.addEventListener('click', function(){
+            if (!confirm('Применить импорт? Будут созданы/обновлены задачи и гипотезы.')) return;
+            _doUpload('apply');
+        }); }
+    }
+
+    function initTab(){
+        var tabImport = document.getElementById('tabImport');
+        if (!tabImport) return;
+        if (document.getElementById('tabHypImport') && document.getElementById('panel-hyp_import')) return;
+        var oldBtn = document.getElementById('tabHypImport');
+        if (oldBtn) oldBtn.remove();
+        var oldPanel = document.getElementById('panel-hyp_import');
+        if (oldPanel) oldPanel.remove();
+        var b = document.createElement('button');
+        b.className = 'tab';
+        b.id = 'tabHypImport';
+        b.setAttribute('data-tab', 'hyp_import');
+        b.textContent = '📊 Импорт гипотез';
+        tabImport.parentNode.insertBefore(b, tabImport.nextSibling);
+        b.addEventListener('click', function(){
+            document.querySelectorAll('#mainWrap .tab').forEach(function(x){ x.classList.remove('active'); });
+            b.classList.add('active');
+            showPanel();
+        });
+    }
+
+    if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', function(){ setTimeout(initTab, 600); });
+    else setTimeout(initTab, 600);
+    setTimeout(initTab, 1500);
+    setTimeout(initTab, 3000);
+})();'''
+
+
+
+    @app.route('/plugins-assets/hyp_import.js', methods=['GET'])
+    def _mp_hyp_import_js():
+        return app.response_class(_HYP_IMPORT_JS, mimetype='application/javascript')
+
+    @app.route('/api/plugins/my_profile/hypotheses/import', methods=['POST'])
+    def _mp_hyp_import():
+        try:
+            from auth import current_user as _cur_hyp
+            u = _cur_hyp(db)
+        except Exception:
+            u = None
+        if not u:
+            return jsonify({'success': False, 'error': 'Требуется вход'}), 401
+        if u.get('role') != 'admin':
+            return jsonify({'success': False, 'error': 'Только для администратора'}), 403
+        file = request.files.get('file')
+        if not file:
+            return jsonify({'success': False, 'error': 'файл не загружен'}), 400
+        mode = str(request.form.get('mode') or 'preview').strip().lower()
+        if mode not in ('preview', 'apply'):
+            mode = 'preview'
+        strategy = str(request.form.get('strategy') or 'replace').strip().lower()
+        if strategy not in ('ignore', 'replace', 'skip_duplicates', 'fail'):
+            strategy = 'replace'
+        try:
+            file_bytes = file.read()
+        except Exception as e:
+            return jsonify({'success': False, 'error': f'ошибка чтения файла: {e}'}), 400
+        _data = db.load_all()
+        all_emps = _data.get('employees') or []
+        parsed, err = _parse_hypotheses_xlsx(file_bytes, all_emps)
+        if err or not parsed:
+            return jsonify({'success': False, 'error': err or 'пустой результат'}), 400
+        # PATCH v1.6.5: фильтр по выбранным проверкам (чекбоксы в UI)
+        _sel_raw = request.form.get('selected_checks')
+        if _sel_raw:
+            try:
+                _sel = _json.loads(_sel_raw)
+                if isinstance(_sel, list) and _sel:
+                    _sel_set = set(str(x) for x in _sel)
+                    parsed = [c for c in parsed if str(c['check_id']) in _sel_set]
+                    if not parsed:
+                        return jsonify({'success': False,
+                                        'error': 'Ни одна проверка не выбрана'}), 400
+            except Exception as _e:
+                print(f'[hyp_import] selected_checks: {_e}')
+
+        existing_by_check_id = {}
+        existing_by_name = {}
+        existing_ids_all = set()
+        for _t in (_data.get('tasks') or []):
+            _tid = str(_t.get('id') or '')
+            existing_ids_all.add(_tid)
+            if _tid.startswith('check_'):
+                existing_by_check_id[_tid[len('check_'):]] = _t
+            _nm = (_t.get('name') or '').strip().lower()
+            if _nm:
+                existing_by_name[_nm] = _t
+
+        out_checks = []
+        total_new_tasks = 0
+        total_update_tasks = 0
+        total_new_hyps = 0
+        total_dup_hyps = 0
+        conflicts_fail = []
+        emp_found = 0
+        emp_not_found = 0
+
+        for chk in parsed:
+            cid = chk['check_id']
+            existing_task = existing_by_check_id.get(cid)
+            if not existing_task:
+                nm_key = (chk['check_name'] or '').strip().lower()
+                if nm_key and nm_key in existing_by_name:
+                    existing_task = existing_by_name[nm_key]
+            existing_hyps = []
+            if existing_task:
+                try:
+                    existing_hyps = _json.loads(existing_task.get('hypotheses_json') or '[]')
+                    if not isinstance(existing_hyps, list):
+                        existing_hyps = []
+                except Exception:
+                    existing_hyps = []
+            existing_hyp_by_id = {}
+            for eh in existing_hyps:
+                if isinstance(eh, dict) and eh.get('id'):
+                    existing_hyp_by_id[str(eh['id'])] = eh
+
+            c_info = {
+                'check_id': cid, 'check_name': chk['check_name'],
+                'karman': chk['karman'], 'manager_fio': chk['manager_fio'],
+                'manager_found': chk.get('manager_found', False),
+                'action': 'create' if not existing_task else 'update',
+                'hypotheses': [],
+            }
+            for hyp in chk['hypotheses']:
+                new_id = 'imp_h_' + hyp['hyp_id']
+                h_info = {
+                    'hyp_id': hyp['hyp_id'], 'new_id': new_id,
+                    'theme': hyp['theme'], 'author_fio': hyp['author_fio'],
+                    'author_found': hyp['author_found'],
+                    'publish_date': hyp['publish_date'],
+                    'status': hyp['status'], 'raw_status': hyp['raw_status'],
+                    'action': 'create',
+                }
+                if hyp['author_fio']:
+                    if hyp['author_found']:
+                        emp_found += 1
+                    else:
+                        emp_not_found += 1
+                if new_id in existing_hyp_by_id:
+                    if strategy == 'ignore':
+                        h_info['action'] = 'skip'
+                        total_dup_hyps += 1
+                    elif strategy == 'skip_duplicates':
+                        h_info['action'] = 'skip'
+                        total_dup_hyps += 1
+                    elif strategy == 'fail':
+                        h_info['action'] = 'error'
+                        conflicts_fail.append(f"Проверка {cid}, гипотеза {hyp['hyp_id']}")
+                    else:
+                        h_info['action'] = 'update'
+                        total_dup_hyps += 1
+                else:
+                    total_new_hyps += 1
+                c_info['hypotheses'].append(h_info)
+            if c_info['action'] == 'create':
+                total_new_tasks += 1
+            else:
+                total_update_tasks += 1
+            out_checks.append(c_info)
+
+        if strategy == 'fail' and conflicts_fail:
+            return jsonify({'success': False,
+                            'error': f'Найдено {len(conflicts_fail)} конфликтов, импорт отменён',
+                            'errors': conflicts_fail[:20]}), 409
+
+        if mode == 'preview':
+            return jsonify({
+                'success': True, 'mode': 'preview', 'strategy': strategy,
+                'checks': out_checks,
+                'summary': {
+                    'tasks_total': len(parsed),
+                    'tasks_new': total_new_tasks,
+                    'tasks_update': total_update_tasks,
+                    'hyps_total': sum(len(c['hypotheses']) for c in parsed),
+                    'hyps_new': total_new_hyps,
+                    'hyps_dup': total_dup_hyps,
+                    'employees_found': emp_found,
+                    'employees_not_found': emp_not_found,
+                },
+            })
+
+        from datetime import datetime as _dt_h, date as _date_h
+        now_str = _dt_h.now().strftime('%Y-%m-%d %H:%M:%S')
+        today_str = _date_h.today().strftime('%Y-%m-%d')
+        created_ids = []
+        updated_ids = []
+
+        with db.transaction() as tx:
+            for chk in parsed:
+                cid = chk['check_id']
+                new_task_id = 'check_' + cid
+                existing_task = existing_by_check_id.get(cid)
+                if not existing_task:
+                    nm_key = (chk['check_name'] or '').strip().lower()
+                    if nm_key and nm_key in existing_by_name:
+                        existing_task = existing_by_name[nm_key]
+
+                existing_hyps = []
+                if existing_task:
+                    try:
+                        existing_hyps = _json.loads(existing_task.get('hypotheses_json') or '[]')
+                        if not isinstance(existing_hyps, list):
+                            existing_hyps = []
+                    except Exception:
+                        existing_hyps = []
+                final_hyps = list(existing_hyps)
+                existing_ids = {str(eh.get('id')) for eh in existing_hyps
+                                if isinstance(eh, dict) and eh.get('id')}
+                hyp_no = sum(1 for h in final_hyps if h.get('kind') == 'hypothesis') + 1
+
+                for hyp in chk['hypotheses']:
+                    new_id = 'imp_h_' + hyp['hyp_id']
+                    if new_id in existing_ids:
+                        if strategy in ('ignore', 'skip_duplicates'):
+                            continue
+                        if strategy == 'replace':
+                            final_hyps = [h for h in final_hyps if h.get('id') != new_id]
+                        else:
+                            continue
+                    parts = []
+                    parts.append('**ID проверки:** ' + str(cid))
+                    parts.append('**ID гипотезы:** ' + str(hyp['hyp_id']))
+                    if hyp['hypothesis']:
+                        parts.append('**Гипотеза:**\n' + hyp['hypothesis'])
+                    if hyp['algorithm']:
+                        parts.append('**Алгоритм:**\n' + hyp['algorithm'])
+                    if hyp['expected']:
+                        parts.append('**Ожидаемый результат:**\n' + hyp['expected'])
+                    if hyp['tb']:
+                        parts.append('**ТБ автора:** ' + hyp['tb'])
+                    desc = '\n\n'.join(parts)[:4000]
+                    asg = [hyp['author_id']] if hyp['author_id'] else []
+                    final_hyps.append({
+                        'id': new_id, 'kind': 'hypothesis', 'parent': '',
+                        'no': hyp_no,
+                        'title': (hyp['theme'] or ('Гипотеза ' + hyp['hyp_id']))[:200],
+                        'description': desc,
+                        'date_from': today_str,
+                        'date_to': hyp['publish_date'] or '',
+                        'status': hyp['status'],
+                        'assignees': asg,
+                    })
+                    hyp_no += 1
+
+                _n = 0
+                for h in final_hyps:
+                    if h.get('kind') == 'hypothesis':
+                        _n += 1
+                        h['no'] = _n
+                hyps_json = _json.dumps(final_hyps, ensure_ascii=False)
+
+                tags = list(existing_task.get('tags') or []) if existing_task else []
+                imp_tag = 'check_' + cid
+                if imp_tag not in tags:
+                    tags.append(imp_tag)
+                if chk['karman']:
+                    kt = _hyp_slug(chk['karman'], 30)
+                    if kt and kt not in tags:
+                        tags.append(kt)
+
+                task_assignees = list(existing_task.get('assignees') or []) if existing_task else []
+                if chk.get('manager_id') and chk['manager_id'] not in task_assignees:
+                    task_assignees.append(chk['manager_id'])
+
+                # PATCH v1.6.2: ID проверки в описании задачи
+                _task_desc_new_parts = ['**ID проверки:** ' + str(cid)]
+                if chk['karman']:
+                    _task_desc_new_parts.append('**Карман:** ' + chk['karman'])
+                _task_desc_new = '\n\n'.join(_task_desc_new_parts)
+
+                if existing_task:
+                    tid = existing_task['id']
+                    _cur_desc = (existing_task.get('description') or '').strip()
+                    _looks_auto = (
+                        not _cur_desc
+                        or _cur_desc.startswith('**ID проверки:')
+                        or _cur_desc.startswith('Карман:')
+                    )
+                    if _looks_auto:
+                        _new_desc = _task_desc_new
+                    elif '**ID проверки:**' not in _cur_desc:
+                        _new_desc = '**ID проверки:** ' + str(cid) + '\n\n' + _cur_desc
+                    else:
+                        _new_desc = _cur_desc
+                    tx.exec(
+                        'UPDATE tasks SET name=?, description=?, hypotheses_json=? WHERE id=?',
+                        ((chk['check_name'] or existing_task.get('name', '')), _new_desc, hyps_json, tid)
+                    )
+                    tx.exec('DELETE FROM task_tags WHERE task_id=?', (tid,))
+                    for tg in tags:
+                        tx.exec('INSERT OR IGNORE INTO task_tags (task_id, tag) VALUES (?,?)', (tid, tg))
+                    tx.exec('DELETE FROM task_assignees WHERE task_id=?', (tid,))
+                    for a in task_assignees:
+                        tx.exec('INSERT OR IGNORE INTO task_assignees (task_id, employee_id) VALUES (?,?)', (tid, a))
+                    updated_ids.append(tid)
+                else:
+                    tid = new_task_id
+                    i = 1
+                    while tid in existing_ids_all:
+                        i += 1
+                        tid = f'{new_task_id}_{i}'
+                    existing_ids_all.add(tid)
+                    dates = [h['publish_date'] for h in chk['hypotheses'] if h['publish_date']]
+                    task_start = min(dates) if dates else today_str
+                    task_end = max(dates) if dates else ''
+                    tx.exec(
+                        'INSERT INTO tasks (id,name,icon,description,status,start_date,deadline,completed_at,folder,order_ref,hypotheses_json,created_at) '
+                        'VALUES (?,?,?,?,?,?,?,?,?,?,?,?)',
+                        (tid, chk['check_name'] or ('Проверка ' + cid), '🧪', _task_desc_new,
+                         'active', task_start, task_end, '', '', '', hyps_json, now_str)
+                    )
+                    for tg in tags:
+                        tx.exec('INSERT OR IGNORE INTO task_tags (task_id, tag) VALUES (?,?)', (tid, tg))
+                    for a in task_assignees:
+                        tx.exec('INSERT OR IGNORE INTO task_assignees (task_id, employee_id) VALUES (?,?)', (tid, a))
+                    created_ids.append(tid)
+
+        try:
+            db._invalidate_cache()
+        except Exception:
+            pass
+
+        return jsonify({
+            'success': True, 'mode': 'apply',
+            'created_tasks': created_ids, 'updated_tasks': updated_ids,
+            'summary': {'tasks_created': len(created_ids), 'tasks_updated': len(updated_ids)},
+        })
+
+    _V165_CSS = (
+        '#panel-hyp_import .import-box{display:flex;flex-direction:column;gap:14px;padding:22px 24px;background:var(--pg-card-bg);border:1px solid var(--pg-card-border);border-radius:14px}'
+        '#panel-hyp_import h3{margin:0;font-size:1rem;font-weight:800;color:var(--pg-accent)}'
+        '#panel-hyp_import .import-hint{font-size:.82rem;color:var(--pg-meta);line-height:1.55;background:var(--pg-inner-bg);padding:10px 14px;border-radius:10px;border-left:3px solid var(--pg-accent)}'
+        '#panel-hyp_import .import-hint code{background:var(--pg-accent-bg);color:var(--pg-accent);padding:1px 6px;border-radius:6px;font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;font-size:.75rem}'
+        '#panel-hyp_import .import-toolbar{display:flex;gap:10px;flex-wrap:wrap;align-items:center}'
+        '#panel-hyp_import .import-toolbar input[type=file]{padding:9px 12px;border:1px dashed var(--pg-card-border);background:var(--pg-input-bg);color:var(--pg-text);border-radius:10px;font-family:inherit;font-size:.85rem;flex:1 1 260px;min-width:0;cursor:pointer}'
+        '#panel-hyp_import .btn-prim{padding:9px 18px;border-radius:10px;border:none;background:linear-gradient(135deg,var(--pg-accent),var(--pg-accent-2));color:#0a0a0a;font-weight:800;cursor:pointer;font-family:inherit;font-size:.85rem}'
+        '#panel-hyp_import .btn-prim:disabled{opacity:.4;cursor:not-allowed}'
+        '#panel-hyp_import .btn-sec{padding:9px 18px;border-radius:10px;border:1px solid var(--pg-card-border);background:transparent;color:var(--pg-desc);font-weight:700;cursor:pointer;font-family:inherit;font-size:.85rem}'
+        '#panel-hyp_import .btn-sec:hover:not(:disabled){border-color:var(--pg-accent);color:var(--pg-accent)}'
+        '#panel-hyp_import .hyp-strategy-row{display:flex;gap:10px;align-items:center;flex-wrap:wrap;padding:10px 14px;background:var(--pg-inner-bg);border-radius:10px;font-size:.82rem;color:var(--pg-meta)}'
+        '#panel-hyp_import .hyp-strategy-row select{padding:7px 10px;border:1px solid var(--pg-input-border);background:var(--pg-input-bg);color:var(--pg-text);border-radius:8px;font-family:inherit;font-size:.85rem;min-width:200px}'
+        '#panel-hyp_import .hyp-summary{display:grid;grid-template-columns:repeat(auto-fit,minmax(140px,1fr));gap:8px;margin-bottom:8px}'
+        '#panel-hyp_import .hyp-kpi{padding:12px 14px;background:var(--pg-inner-bg);border-radius:10px;border-left:3px solid var(--pg-accent)}'
+        '#panel-hyp_import .hyp-kpi.err{border-left-color:#ec7063}'
+        '#panel-hyp_import .hyp-kpi.ok{border-left-color:#58d68d}'
+        '#panel-hyp_import .hyp-kpi.warn{border-left-color:#f7dc6f}'
+        '#panel-hyp_import .hyp-kpi .v{font-size:1.35rem;font-weight:800;color:var(--pg-accent);line-height:1.05}'
+        '#panel-hyp_import .hyp-kpi.err .v{color:#ec7063}'
+        '#panel-hyp_import .hyp-kpi.ok .v{color:#58d68d}'
+        '#panel-hyp_import .hyp-kpi.warn .v{color:#b7950b}'
+        '#panel-hyp_import .hyp-kpi .l{font-size:.68rem;color:var(--pg-meta);text-transform:uppercase;letter-spacing:.5px;margin-top:4px;font-weight:700}'
+        '#panel-hyp_import .hyp-list{display:flex;flex-direction:column;gap:10px;margin-top:6px}'
+        '#panel-hyp_import .hyp-card{padding:14px 16px;background:var(--pg-inner-bg);border-radius:12px;border-left:4px solid var(--pg-accent)}'
+        '#panel-hyp_import .hyp-card.new{border-left-color:#58d68d}'
+        '#panel-hyp_import .hyp-card.update{border-left-color:#3498db}'
+        '#panel-hyp_import .hyp-card.unchk{opacity:.45;filter:grayscale(.6)}'
+        '#panel-hyp_import .hyp-card-head{display:flex;align-items:baseline;gap:10px;flex-wrap:wrap;margin-bottom:8px}'
+        '#panel-hyp_import .hyp-card-name{font-size:.95rem;font-weight:800;color:var(--pg-text)}'
+        '#panel-hyp_import .hyp-card-tag{font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;font-size:.72rem;padding:1px 8px;border-radius:8px;background:var(--pg-accent-bg);color:var(--pg-accent);font-weight:700}'
+        '#panel-hyp_import .hyp-card-meta{font-size:.75rem;color:var(--pg-meta);margin-bottom:6px;line-height:1.55}'
+        '#panel-hyp_import .hyp-card-meta.miss{color:#ec7063}'
+        '#panel-hyp_import .hyp-row{padding:7px 10px;background:var(--pg-card-bg);border-radius:8px;margin:4px 0;font-size:.82rem;display:flex;gap:8px;align-items:flex-start;flex-wrap:wrap}'
+        '#panel-hyp_import .hyp-row .ico{flex:0 0 auto;font-size:.95rem}'
+        '#panel-hyp_import .hyp-row .title{font-weight:700;color:var(--pg-text);flex:1;min-width:0;word-break:break-word}'
+        '#panel-hyp_import .hyp-row .meta{font-size:.72rem;color:var(--pg-meta);white-space:nowrap}'
+        '#panel-hyp_import .hyp-row .author.miss{color:#ec7063}'
+        '#panel-hyp_import .hyp-cb-actions{display:flex;gap:12px;align-items:center;flex-wrap:wrap;padding:8px 12px;margin-bottom:10px;background:var(--pg-inner-bg);border-radius:10px;font-size:.82rem;border:1px solid var(--pg-card-border)}'
+        '#panel-hyp_import .hyp-cb-actions label{display:inline-flex;align-items:center;gap:6px;cursor:pointer;font-weight:700;color:var(--pg-text);margin:0}'
+        '#panel-hyp_import .hyp-cb-actions input[type=checkbox]{width:16px;height:16px;accent-color:var(--pg-accent);margin:0;cursor:pointer}'
+        '#panel-hyp_import .hyp-cb-actions button{background:transparent;border:1px solid var(--pg-card-border);color:var(--pg-desc);padding:3px 10px;border-radius:8px;font-size:.78rem;font-family:inherit;font-weight:700;cursor:pointer}'
+        '#panel-hyp_import .hyp-cb-actions button:hover{border-color:var(--pg-accent);color:var(--pg-accent)}'
+        '#panel-hyp_import .hyp-cb-count{color:var(--pg-meta);margin-left:auto}'
+        '#panel-hyp_import .hyp-cb-count b{color:var(--pg-accent);font-weight:800}'
+        '#panel-hyp_import .hyp-cb-wrap{display:inline-flex;align-items:center;gap:6px;margin-right:10px;flex:0 0 auto}'
+        '#panel-hyp_import .hyp-cb-wrap input[type=checkbox]{width:18px;height:18px;accent-color:var(--pg-accent);margin:0;cursor:pointer}'
+        '#panel-hyp_import .msg{padding:10px 14px;border-radius:10px;font-size:.85rem;display:none}'
+        '#panel-hyp_import .msg.ok{display:block;background:rgba(46,204,113,.12);color:#58d68d;border:1px solid rgba(46,204,113,.35)}'
+        '#panel-hyp_import .msg.err{display:block;background:rgba(231,76,60,.12);color:#ec7063;border:1px solid rgba(231,76,60,.35)}'
+        '#panel-hyp_import .msg.warn{display:block;background:rgba(241,196,15,.12);color:#b7950b;border:1px solid rgba(241,196,15,.4)}'
+        'body.trk-theme-light #panel-hyp_import .import-box,body.trk-theme-light #panel-hyp_import .hyp-card,body.trk-theme-light #panel-hyp_import .hyp-kpi,body.trk-theme-light #panel-hyp_import .hyp-strategy-row,body.trk-theme-light #panel-hyp_import .hyp-cb-actions{background:#fff;border-color:rgba(0,0,0,.12)}'
+        'body.trk-theme-light #panel-hyp_import .hyp-row{background:#f7f9fa}'
+    )
+
+    _V165_JS = '''(function(){
+    'use strict';
+    window.__trkLastError = window.__trkLastError || '';
+    window.addEventListener('error', function(e){
+        try { window.__trkLastError = (e.error && e.error.message) || e.message || 'unknown'; } catch(x){}
+    });
+    window.addEventListener('unhandledrejection', function(e){
+        var r = e.reason;
+        window.__trkLastError = (r && r.message) || String(r || 'unknown');
+        try { console.error('[my_profile] unhandledrejection:', r); } catch(x){}
+    });
+})();'''
+
+    @app.after_request
+    def _mp_inject_hyp_import(resp):
+        try:
+            ct = resp.headers.get('Content-Type', '')
+            if 'text/html' not in ct:
+                return resp
+            if resp.status_code != 200:
+                return resp
+            if request.path not in ('/plugins/my_profile/', '/plugins/my_profile'):
+                return resp
+            html = resp.get_data(as_text=True)
+            if 'hypImportStyleV165' in html:
+                return resp
+            inject = ('<style id="hypImportStyleV165">' + _V165_CSS + '</style>'
+                      + '<script src="/plugins-assets/hyp_import.js"></script>'
+                      + '<script>' + _V165_JS + '</script>')
+            if '</body>' not in html:
+                return resp
+            html = html.replace('</body>', inject + '</body>', 1)
+            resp.set_data(html)
+        except Exception:
+            pass
+        return resp
+
     def on_startup(**ctx):
         print('[my_profile] v8 готов')
-
     hooks.on('on_startup', on_startup)
 
+
+
+# ============================================================
+# PATCH v1.6.0 — импорт гипотез из XLSX (только для админа)
+# ============================================================
+import re as _re_hyp
+
+
+def _hyp_norm_header(s):
+    s = str(s or '').strip().lower().replace('ё', 'е')
+    return ' '.join(s.split())
+
+
+def _hyp_parse_date_ru(v):
+    if v is None:
+        return ''
+    if isinstance(v, datetime):
+        return v.strftime('%Y-%m-%d')
+    if isinstance(v, date):
+        return v.strftime('%Y-%m-%d')
+    s = str(v).strip()
+    if not s:
+        return ''
+    m = _re_hyp.match(r'^(\d{1,2})[.\-/](\d{1,2})[.\-/](\d{2,4})$', s)
+    if m:
+        d, mo, y = m.groups()
+        y = int(y)
+        if y < 100:
+            y += 2000
+        try:
+            return date(y, int(mo), int(d)).strftime('%Y-%m-%d')
+        except Exception:
+            return ''
+    if _re_hyp.match(r'^\d{4}-\d{2}-\d{2}$', s):
+        return s
+    return ''
+
+
+def _hyp_map_status(v):
+    s = _hyp_norm_header(v)
+    if not s:
+        return 'planned'
+    if any(w in s for w in ('не рассмотр', 'план', 'новая')):
+        return 'planned'
+    if any(w in s for w in ('в работ', 'в процесс')):
+        return 'in_progress'
+    if any(w in s for w in ('рассмотрена', 'выполнена', 'закрыта', 'подтвержден', 'одобрена')):
+        return 'done'
+    if any(w in s for w in ('отклон', 'не подтвержд', 'снята')):
+        return 'failed'
+    return 'planned'
+
+
+def _hyp_find_employee(fio, all_employees):
+    fio_n = _hyp_norm_header(fio)
+    if not fio_n or not all_employees:
+        return None
+    for e in all_employees:
+        if _hyp_norm_header(e.get('name', '')) == fio_n:
+            return e
+    parts = fio_n.split()
+    if len(parts) >= 2:
+        key = ' '.join(parts[:2])
+        for e in all_employees:
+            en = _hyp_norm_header(e.get('name', ''))
+            if en.startswith(key):
+                return e
+    if parts:
+        fam = parts[0]
+        candidates = [e for e in all_employees
+                      if _hyp_norm_header(e.get('name', '')).split()[:1] == [fam]]
+        if len(candidates) == 1:
+            return candidates[0]
+    return None
+
+
+def _hyp_slug(s, maxlen=40):
+    tr = {'а': 'a', 'б': 'b', 'в': 'v', 'г': 'g', 'д': 'd', 'е': 'e', 'ё': 'e',
+          'ж': 'zh', 'з': 'z', 'и': 'i', 'й': 'y', 'к': 'k', 'л': 'l', 'м': 'm',
+          'н': 'n', 'о': 'o', 'п': 'p', 'р': 'r', 'с': 's', 'т': 't', 'у': 'u',
+          'ф': 'f', 'х': 'h', 'ц': 'ts', 'ч': 'ch', 'ш': 'sh', 'щ': 'sch',
+          'ъ': '', 'ы': 'y', 'ь': '', 'э': 'e', 'ю': 'yu', 'я': 'ya'}
+    out = []
+    for ch in str(s or '').strip().lower():
+        if ch.isascii() and ch.isalnum():
+            out.append(ch)
+        elif ch in tr:
+            out.append(tr[ch])
+        elif ch in (' ', '-', '_', '.'):
+            out.append('_')
+    return (''.join(out).strip('_') or 'item')[:maxlen]
+
+
+def _parse_hypotheses_xlsx(file_bytes, all_employees):
+    try:
+        from openpyxl import load_workbook
+    except ImportError:
+        return None, 'openpyxl не установлен на сервере'
+    import io as _io
+    try:
+        wb = load_workbook(_io.BytesIO(file_bytes), data_only=True, read_only=False)
+    except Exception as e:
+        return None, f'не удалось открыть файл: {e}'
+    if not wb.sheetnames:
+        return None, 'нет листов в файле'
+    ws = wb[wb.sheetnames[0]]
+    max_r = ws.max_row or 1
+    max_c = ws.max_column or 1
+    header_row = None
+    header_map = {}
+    for r in range(1, min(max_r, 10) + 1):
+        row_vals = [str(ws.cell(r, c).value or '').strip() for c in range(1, max_c + 1)]
+        if sum(1 for v in row_vals if v) >= 3:
+            header_row = r
+            for c, v in enumerate(row_vals, start=1):
+                key = _hyp_norm_header(v)
+                if key:
+                    header_map[key] = c
+            break
+    if header_row is None:
+        return None, 'не найдена строка заголовков'
+    def _col(*candidates):
+        for cand in candidates:
+            if cand in header_map:
+                return header_map[cand]
+        return None
+    col_check_id = _col('ид проверки', 'id проверки')
+    col_check_name = _col('проверка', 'название проверки', 'тема проверки')
+    col_karman = _col('карман')
+    col_mgr_fio = _col('руководитель проверки', 'руководитель')
+    col_hyp_id = _col('ид гипотезы', 'id гипотезы')
+    col_hyp_theme = _col('тема гипотезы', 'тема')
+    col_hyp_text = _col('гипотеза', 'описание гипотезы', 'текст гипотезы')
+    col_author_fio = _col('фио автора', 'автор')
+    col_author_tb = _col('тб автора', 'тб', 'территориальный банк')
+    col_algorithm = _col('алгоритм', 'алгоритм проверки')
+    col_expected = _col('ожидаемый результат', 'ожидаемый рез-т')
+    col_pub_date = _col('дата публикации', 'дата')
+    col_status = _col('статус')
+    if not col_check_id or not col_hyp_id:
+        return None, 'не найдены колонки «ИД проверки» и/или «ИД гипотезы»'
+    by_check = {}
+    order = []
+    for r in range(header_row + 1, max_r + 1):
+        raw_cid = ws.cell(r, col_check_id).value
+        check_id = str(raw_cid).strip() if raw_cid else ''
+        if check_id.endswith('.0'):
+            check_id = check_id[:-2]
+        if not check_id:
+            continue
+        raw_hid = ws.cell(r, col_hyp_id).value if col_hyp_id else None
+        hyp_id = str(raw_hid).strip() if raw_hid else ''
+        if hyp_id.endswith('.0'):
+            hyp_id = hyp_id[:-2]
+        if not hyp_id:
+            hyp_id = 'row_' + str(r)
+        def _cell(col):
+            return (str(ws.cell(r, col).value or '').strip() if col else '')
+        check_name = _cell(col_check_name)
+        karman = _cell(col_karman)
+        mgr_fio = _cell(col_mgr_fio)
+        theme = _cell(col_hyp_theme)
+        hyp_text = _cell(col_hyp_text)
+        author_fio = _cell(col_author_fio)
+        tb = _cell(col_author_tb)
+        algorithm = _cell(col_algorithm)
+        expected = _cell(col_expected)
+        pub_date = _hyp_parse_date_ru(ws.cell(r, col_pub_date).value if col_pub_date else None)
+        raw_status = _cell(col_status)
+        status = _hyp_map_status(raw_status)
+        if check_id not in by_check:
+            by_check[check_id] = {
+                'check_id': check_id, 'check_name': check_name, 'karman': karman,
+                'manager_fio': mgr_fio, 'manager_id': '', 'manager_found': False,
+                'hypotheses': [],
+            }
+            order.append(check_id)
+        elif check_name and not by_check[check_id]['check_name']:
+            by_check[check_id]['check_name'] = check_name
+        elif mgr_fio and not by_check[check_id]['manager_fio']:
+            by_check[check_id]['manager_fio'] = mgr_fio
+        author_obj = _hyp_find_employee(author_fio, all_employees) if author_fio else None
+        by_check[check_id]['hypotheses'].append({
+            'hyp_id': hyp_id, 'theme': theme, 'hypothesis': hyp_text,
+            'algorithm': algorithm, 'expected': expected,
+            'author_fio': author_fio, 'author_id': (author_obj['id'] if author_obj else ''),
+            'author_found': bool(author_obj), 'tb': tb,
+            'publish_date': pub_date, 'status': status, 'raw_status': raw_status,
+        })
+    for cid in order:
+        c = by_check[cid]
+        if c['manager_fio']:
+            mgr = _hyp_find_employee(c['manager_fio'], all_employees)
+            c['manager_id'] = mgr['id'] if mgr else ''
+            c['manager_found'] = bool(mgr)
+    return [by_check[cid] for cid in order], None

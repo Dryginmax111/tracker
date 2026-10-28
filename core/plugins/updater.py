@@ -101,9 +101,16 @@ def _write_version(version, last_patch_id):
 
 
 def _ver_tuple(v):
+    # PATCH v1.0.5: раньше '1.1.1b' падал на int('1b') → (0,0,0), и патч
+    # с суффиксом оказывался «первым в очереди». Теперь берём только
+    # числовую часть каждого сегмента: '1.1.1b' → (1,1,1), '1.0.0-rc' → (1,0,0).
     try:
+        import re as _re_ver
         parts = str(v or '').strip().split('.')
-        out = [int(p) for p in parts[:3]]
+        out = []
+        for p in parts[:3]:
+            m = _re_ver.match(r'(\d+)', p)
+            out.append(int(m.group(1)) if m else 0)
         while len(out) < 3:
             out.append(0)
         return tuple(out)
@@ -126,12 +133,38 @@ def _read_config():
         return {}
 
 
-def _read_journal():
+def _read_journal_strict():
+    """PATCH v1.0.11: громкая ошибка при битом журнале.
+
+    Возвращает {} только если файла нет. Если файл есть, но не парсится —
+    бросает RuntimeError. Apply/rollback/check обязаны использовать эту
+    функцию: иначе патчи начнут применяться «с нуля», файл будет перезаписан,
+    и история (с путями к бэкапам) потеряется.
+    """
     if not JOURNAL_PATH.exists():
         return {}
     try:
-        d = json.loads(JOURNAL_PATH.read_text(encoding='utf-8'))
-        return d if isinstance(d, dict) else {}
+        _raw = JOURNAL_PATH.read_text(encoding='utf-8-sig')
+        _data = json.loads(_raw)
+        if not isinstance(_data, dict):
+            raise ValueError('корень не объект')
+        return _data
+    except Exception as e:
+        raise RuntimeError(
+            f'Журнал {JOURNAL_PATH.name} повреждён: {e}. '
+            f'Применение и откат заблокированы. '
+            f'Восстановите из .patches_applied.archive-*.json или '
+            f'удалите файл вручную (потеряете историю применения).'
+        )
+
+
+def _read_journal():
+    """Безопасное чтение для read-only эндпоинтов (возвращает {} при ошибке).
+
+    Apply/rollback/check обязаны использовать _read_journal_strict().
+    """
+    try:
+        return _read_journal_strict()
     except Exception:
         return {}
 
@@ -755,6 +788,106 @@ table td.actions { text-align: right; white-space: nowrap; }
     .step-row .btn { grid-column: 1 / -1; justify-self: stretch; justify-content: center; }
     .check-result { margin-left: 0; }
 }
+
+/* PATCH v1.1.1b updater-modal-scroll-fix: фикс. высота + скролл списка патчей */
+#updaterCheckModal.modal-overlay {
+    display: none;
+    position: fixed;
+    inset: 0;
+    z-index: 4000;
+    background: rgba(0,0,0,0.55);
+    backdrop-filter: blur(6px);
+    -webkit-backdrop-filter: blur(6px);
+    align-items: center;
+    justify-content: center;
+    padding: 20px;
+    box-sizing: border-box;
+}
+#updaterCheckModal.modal-overlay.active {
+    display: flex;
+}
+#updaterCheckModal .updater-check-box {
+    display: flex !important;
+    flex-direction: column !important;
+    width: 100%;
+    max-width: 640px;
+    height: 85vh;
+    max-height: 780px;
+    min-height: 360px;
+    margin: 0;
+    padding: 0 !important;
+    overflow: hidden;
+    background: var(--pg-card-bg, #1a1a1a);
+    border: 1px solid var(--pg-card-border, rgba(245,215,110,0.22));
+    border-radius: 18px;
+    box-shadow: 0 20px 60px rgba(0,0,0,0.55);
+}
+#updaterCheckModal .updater-check-title {
+    flex: 0 0 auto !important;
+    margin: 0 !important;
+    padding: 18px 22px 14px !important;
+    border-bottom: 1px solid rgba(128,128,128,0.2);
+    font-size: 1.1rem;
+    display: flex;
+    align-items: center;
+    gap: 10px;
+}
+#updaterCheckModal #ucBody {
+    flex: 1 1 auto !important;
+    min-height: 0 !important;
+    overflow-y: auto !important;
+    padding: 16px 22px !important;
+    scrollbar-width: thin;
+    scrollbar-color: rgba(245,215,110,0.5) rgba(128,128,128,0.1);
+}
+#updaterCheckModal #ucBody::-webkit-scrollbar { width: 8px; }
+#updaterCheckModal #ucBody::-webkit-scrollbar-track {
+    background: rgba(128,128,128,0.08);
+    border-radius: 4px;
+}
+#updaterCheckModal #ucBody::-webkit-scrollbar-thumb {
+    background: rgba(128,128,128,0.3);
+    border-radius: 4px;
+}
+#updaterCheckModal #ucBody::-webkit-scrollbar-thumb:hover {
+    background: var(--pg-accent, #f5d76e);
+}
+#updaterCheckModal .updater-check-footer {
+    flex: 0 0 auto !important;
+    padding: 12px 22px 16px !important;
+    border-top: 1px solid rgba(128,128,128,0.2);
+    background: var(--pg-card-bg, #1a1a1a);
+}
+#updaterCheckModal .updater-check-auto {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 8px 12px;
+    margin-bottom: 10px;
+    background: var(--pg-inner-bg, rgba(128,128,128,0.1));
+    border-radius: 8px;
+    font-size: 0.85rem;
+    color: var(--pg-text, #e8e8e8);
+    cursor: pointer;
+    user-select: none;
+}
+#updaterCheckModal .updater-check-auto input[type="checkbox"] {
+    width: 16px;
+    height: 16px;
+    margin: 0;
+    flex: 0 0 auto;
+    accent-color: var(--pg-accent, #f5d76e);
+}
+#updaterCheckModal .updater-check-footer .modal-actions {
+    display: flex;
+    justify-content: flex-end;
+    gap: 8px;
+    margin: 0;
+}
+body.trk-theme-light #updaterCheckModal .updater-check-box,
+body.trk-theme-light #updaterCheckModal .updater-check-footer {
+    background: #ffffff;
+}
 </style>
 </head>
 <body>
@@ -803,16 +936,20 @@ table td.actions { text-align: right; white-space: nowrap; }
     </div>
 </div>
 <div class="modal-overlay" id="updaterCheckModal">
-    <div class="modal-box">
-        <h2 class="warn" style="display:flex; align-items:center; gap:10px;"><span style="font-size:1.7rem;">⬆</span> Доступно обновление</h2>
-        <div class="modal-body" id="ucBody"></div>
-        <div style="margin-top:16px; padding:10px; background:var(--pg-inner-bg); border-radius:8px; display:flex; align-items:center; gap:8px;">
-            <input type="checkbox" id="ucAutoUpdate" style="width:16px; height:16px; accent-color:var(--pg-accent); cursor:pointer;">
-            <label for="ucAutoUpdate" style="font-size:0.85rem; color:var(--pg-text); cursor:pointer; margin:0;">Автоматически устанавливать обновления без подтверждения</label>
-        </div>
-        <div class="modal-actions">
-            <button class="btn btn-secondary" id="ucCancelBtn">Не сейчас</button>
-            <button class="btn btn-primary" id="ucApplyBtn">Обновить сейчас</button>
+    <div class="modal-box updater-check-box">
+        <h2 class="warn updater-check-title">
+            <span style="font-size:1.7rem;">⬆</span> Доступно обновление
+        </h2>
+        <div class="updater-check-scroll" id="ucBody"></div>
+        <div class="updater-check-footer">
+            <label class="updater-check-auto">
+                <input type="checkbox" id="ucAutoUpdate">
+                <span>Автоматически устанавливать обновления без подтверждения</span>
+            </label>
+            <div class="modal-actions">
+                <button class="btn btn-secondary" id="ucCancelBtn">Не сейчас</button>
+                <button class="btn btn-primary" id="ucApplyBtn">Обновить сейчас</button>
+            </div>
         </div>
     </div>
 </div>
@@ -880,6 +1017,18 @@ function renderBanner(d){
 
 function renderStatus(d){
     var bar = document.getElementById('statusBar');
+    // PATCH v1.0.11: битый журнал — громкая плашка, apply/rollback заблокированы.
+    if (d && d.journal_corrupt) {
+        bar.innerHTML = '<div class="stat-card err" style="grid-column: 1 / -1;">'
+            + '<div class="v" style="font-size:0.85rem;line-height:1.35;">⚠ ' + esc(d.journal_error || 'журнал повреждён') + '</div>'
+            + '<div class="l">Применение и откат заблокированы · восстановите из .patches_applied.archive-*.json</div>'
+            + '</div>';
+        var _bchk = document.getElementById('btnCheck');
+        if (_bchk) _bchk.disabled = true;
+        var _bapp = document.getElementById('btnApply');
+        if (_bapp) _bapp.disabled = true;
+        return;
+    }
     var shareCls = d.share_ok ? 'ok' : 'err';
     var shareVal = d.share_ok ? 'доступна' : 'нет';
     var pending = (d.pending || []).length;
@@ -1198,10 +1347,23 @@ function doRollback(pid, force){
         if (r.status === 409) {
             return r.json().then(function(d){
                 if (d && d.need_force && Array.isArray(d.dependents) && d.dependents.length) {
-                    var msg = 'От патча «' + pid + '» зависят применённые патчи:\n\n' 
-                            + d.dependents.join(', ')
-                            + '\n\nВсё равно откатить? Зависимые патчи останутся в журнале, '
-                            + 'и цепочка версий порвётся.';
+                    // PATCH v1.0.15: показываем причину зависимости.
+                    var _lines = [];
+                    var _details = d.dependents_details || [];
+                    if (_details.length) {
+                        _details.forEach(function(x){
+                            if (x.reason === 'requires')
+                                _lines.push('• ' + x.id + ' — требует «' + pid + '»');
+                            else
+                                _lines.push('• ' + x.id + ' — общий файл: ' + (x.files || []).join(', '));
+                        });
+                    } else {
+                        _lines = d.dependents.map(function(x){ return '• ' + x; });
+                    }
+                    var msg = 'От патча «' + pid + '» зависят применённые позже патчи:\n\n'
+                            + _lines.join('\n')
+                            + '\n\nВсё равно откатить? Зависимые будут откачены ПЕРВЫМИ '
+                            + '(в порядке убывания версии), чтобы не порвать цепочку.';
                     if (confirm(msg)) return doRollback(pid, true);
                     return { success: false, error: 'cancelled' };
                 }
@@ -1298,6 +1460,10 @@ def register(app, db, hooks):
 
     @app.route('/api/plugins/updater/debug', methods=['GET'])
     def _up_debug():
+        # PATCH v1.0.2: эндпоинт был открыт без авторизации.
+        u = _auth_ok(db)
+        if not u:
+            return jsonify({'success': False, 'error': 'auth'}), 401
         share, err = _share_dir()
         if not share:
             return jsonify({'ok': False, 'share': None, 'err': err})
@@ -1343,6 +1509,10 @@ def register(app, db, hooks):
 
     @app.route('/api/plugins/updater/_diag', methods=['GET'])
     def _up_diag():
+        # PATCH v1.0.2: эндпоинт был открыт без авторизации.
+        u = _auth_ok(db)
+        if not u:
+            return jsonify({'success': False, 'error': 'auth'}), 401
         out = {'success': True}
         try:
             u = _auth_ok(db)
@@ -1451,13 +1621,24 @@ def register(app, db, hooks):
             u = _auth_ok(db)
             if not u:
                 return jsonify({'success': False, 'error': 'forbidden', 'hint': 'Нет прав tab.updater'}), 403
-            journal = _read_journal()
+            # PATCH v1.0.11: status возвращается даже при битом журнале —
+            # но с явным флагом journal_corrupt, чтобы UI не молчал.
+            _journal_corrupt = False
+            _journal_error = ''
+            try:
+                journal = _read_journal_strict()
+            except RuntimeError as _e:
+                journal = {}
+                _journal_corrupt = True
+                _journal_error = str(_e)
             share, share_err = _share_dir()
             st = _status(share, journal)
             if share_err and not st.get('share_error'):
                 st['share_error'] = share_err
             st['_diag_ok'] = True
             st['_diag_journal_len'] = len(journal)
+            st['journal_corrupt'] = _journal_corrupt
+            st['journal_error'] = _journal_error
             st['success'] = True
             return jsonify(st)
         except Exception as e:
@@ -1521,7 +1702,11 @@ def register(app, db, hooks):
             u = _auth_ok(db)
             if not u:
                 return jsonify({'success': False, 'error': 'forbidden'}), 403
-            journal = _read_journal()
+            # PATCH v1.0.11: strict reader — битый журнал блокирует проверку.
+            try:
+                journal = _read_journal_strict()
+            except RuntimeError as _e:
+                return jsonify({'success': False, 'error': str(_e)}), 500
             local_v = _current_version()
             share, share_err = _share_dir()
             if not share:
@@ -1568,7 +1753,12 @@ def register(app, db, hooks):
             u = _auth_ok(db, need_apply=True)
             if not u:
                 return jsonify({'success': False, 'error': 'forbidden'}), 403
-            journal = _read_journal()
+            # PATCH v1.0.11: strict reader — при повреждённом журнале
+            # применение заблокировано.
+            try:
+                journal = _read_journal_strict()
+            except RuntimeError as _e:
+                return jsonify({'success': False, 'error': str(_e)}), 500
             local_v = _current_version()
             share, share_err = _share_dir()
             if not share:
@@ -1598,7 +1788,14 @@ def register(app, db, hooks):
             if dry_rc != 0:
                 return jsonify({'success': False, 'error': 'dry-run не прошёл', 'output': dry_out}), 400
 
+            # PATCH v1.0.7: журнал ДО apply — чтобы точно знать, что применилось.
+            journal_before_apply = set(_read_journal().keys())
+
             apply_rc, apply_out = _run_patcher(stage, dry=False, timeout=300)
+
+            journal_now = _read_journal()
+            applied_now = [pid for pid in journal_now if pid not in journal_before_apply]
+            not_applied = [p.get('id') for p in pending if p.get('id') not in journal_now]
 
             new_v = _current_version()
             try:
@@ -1612,10 +1809,14 @@ def register(app, db, hooks):
                 print(f'[updater] version recompute failed: {_e}')
 
             if apply_rc != 0:
+                # PATCH v1.0.7: возвращаем applied_ids и not_applied_ids,
+                # чтобы UI показал пользователю, что именно применилось.
                 return jsonify({
                     'success': False,
                     'error': f'патчер вернул код {apply_rc}',
                     'output': apply_out,
+                    'applied_ids': applied_now,
+                    'not_applied_ids': not_applied,
                     'new_version': new_v,
                 }), 500
 
@@ -1629,6 +1830,12 @@ def register(app, db, hooks):
             except Exception as e:
                 print(f'[updater] audit failed: {e}')
 
+            # PATCH v1.0.6: подчищаем staging и старые бэкапы после apply.
+            try:
+                _cleanup_staging(keep=10)
+                _cleanup_backups(keep=20)
+            except Exception as _e_cl:
+                print(f'[updater] cleanup after apply failed: {_e_cl}')
             return jsonify({
                 'success': True,
                 'applied_count': len(pending),
@@ -1661,34 +1868,132 @@ def register(app, db, hooks):
             if not pid:
                 return jsonify({'success': False, 'error': 'не указан id'}), 400
 
-            journal = _read_journal()
+            # PATCH v1.0.11: strict reader — битый журнал блокирует откат.
+            try:
+                journal = _read_journal_strict()
+            except RuntimeError as _e:
+                return jsonify({'success': False, 'error': str(_e)}), 500
             if pid not in journal:
                 return jsonify({'success': False, 'error': f'патч «{pid}» не найден в журнале'}), 404
 
-            share, _ = _share_dir()
-            dependents = []
-            if share:
-                _all = _scan_patches(share)
-                for _p in _all:
-                    _id = _p.get('id')
-                    if not _id or _id == pid:
-                        continue
-                    _reqs = _p.get('requires') or []
-                    if pid in _reqs and _id in journal:
-                        dependents.append(_id)
-            if dependents and not force:
+            share, _share_err = _share_dir()
+            if not share:
+                # PATCH v1.0.9: без share нельзя проверить зависимости,
+                # откат может оставить зависимые патчи в журнале.
                 return jsonify({
                     'success': False,
-                    'error': f'От патча «{pid}» зависят применённые патчи: {", ".join(dependents)}',
+                    'error': f'Сетевая папка недоступна ({_share_err}). Откат запрещён без проверки зависимостей.',
+                }), 400
+
+            # PATCH v1.0.9 + v1.0.15: собираем зависимые патчи.
+            # v1.0.15: по общим файлам зависимый — только применённый ПОЗЖЕ.
+            # Раньше любой патч, трогавший те же файлы, считался зависимым,
+            # и откат блокировался без причины (12 мешал откату 13, 13 — откату 12).
+            _all = _scan_patches(share)
+            _my_files = set()
+            for _p in _all:
+                if _p.get('id') == pid:
+                    for _op in (_p.get('operations') or []):
+                        _f = _op.get('path') or _op.get('src') or ''
+                        if _f:
+                            _my_files.add(_f)
+                    break
+            _my_applied_at = (journal.get(pid) or {}).get('applied_at') or ''
+            dependents = []
+            dependents_details = []  # PATCH v1.0.15
+            _dep_set = set()
+            for _p in _all:
+                _id = _p.get('id')
+                if not _id or _id == pid:
+                    continue
+                if _id not in journal:
+                    continue
+                _reqs = _p.get('requires') or []
+                if pid in _reqs:
+                    if _id not in _dep_set:
+                        _dep_set.add(_id)
+                        dependents.append(_id)
+                        dependents_details.append({
+                            'id': _id, 'reason': 'requires', 'files': [],
+                        })
+                    continue
+                # по общим файлам — только если применён ПОЗЖЕ
+                _other_applied_at = (journal.get(_id) or {}).get('applied_at') or ''
+                if not _other_applied_at or not _my_applied_at:
+                    continue  # нет данных о времени — не блокируем
+                if _other_applied_at <= _my_applied_at:
+                    continue  # применён раньше или одновременно — не зависимый
+                _shared = []
+                for _op in (_p.get('operations') or []):
+                    _f = _op.get('path') or _op.get('src') or ''
+                    if _f and _f in _my_files and _f not in _shared:
+                        _shared.append(_f)
+                if _shared:
+                    if _id not in _dep_set:
+                        _dep_set.add(_id)
+                        dependents.append(_id)
+                        dependents_details.append({
+                            'id': _id, 'reason': 'shared_file', 'files': _shared,
+                        })
+            if dependents and not force:
+                _dep_list = []
+                for _d in dependents_details:
+                    if _d['reason'] == 'requires':
+                        _dep_list.append(f"{_d['id']} (требует «{pid}»)")
+                    else:
+                        _dep_list.append(f"{_d['id']} (общие файлы: {', '.join(_d['files'])})")
+                return jsonify({
+                    'success': False,
+                    'error': f"От патча «{pid}» зависят применённые позже патчи: " + '; '.join(_dep_list),
                     'dependents': dependents,
+                    'dependents_details': dependents_details,
                     'need_force': True,
                 }), 409
 
+            # PATCH v1.0.9: при force=True сначала откатываем зависимые
+            # в порядке убывания версии, потом сам патч.
+            rolled_back_deps = []
+            if dependents and force:
+                def _vkey(_pid):
+                    _info = journal.get(_pid, {})
+                    _v = (_info.get('target_version') or '').strip()
+                    try:
+                        import re as _re_rb
+                        _parts = _v.split('.')
+                        _out = []
+                        for _p in _parts[:3]:
+                            _m = _re_rb.match(r'(\d+)', _p)
+                            _out.append(int(_m.group(1)) if _m else 0)
+                        while len(_out) < 3:
+                            _out.append(0)
+                        return tuple(_out)
+                    except Exception:
+                        return (0, 0, 0)
+                for _dep in sorted(dependents, key=_vkey, reverse=True):
+                    try:
+                        _rc_d, _out_d = _run_patcher_rollback(_dep, timeout=120)
+                        if _rc_d != 0:
+                            return jsonify({
+                                'success': False,
+                                'error': f'не удалось откатить зависимый патч {_dep}',
+                                'output': _out_d,
+                                'rolled_back_deps': rolled_back_deps,
+                            }), 500
+                        rolled_back_deps.append(_dep)
+                    except Exception as _e:
+                        return jsonify({
+                            'success': False,
+                            'error': f'исключение при откате {_dep}: {_e}',
+                            'rolled_back_deps': rolled_back_deps,
+                        }), 500
+
             rc, out = _run_patcher_rollback(pid)
             if rc != 0:
+                # PATCH v1.0.8: при rc != 0 файлы могли не восстановиться
+                # (см. patcher.rollback). Патч НЕ удаляется из журнала.
                 return jsonify({
                     'success': False,
-                    'error': f'патчер вернул код {rc}',
+                    'error': f'патчер вернул код {rc}: файлы могли не восстановиться, патч оставлен в журнале',
                     'output': out,
                 }), 500
 
@@ -1705,9 +2010,16 @@ def register(app, db, hooks):
             except Exception as e:
                 print(f'[updater] audit failed: {e}')
 
+            # PATCH v1.0.6: подчищаем staging и старые бэкапы после rollback.
+            try:
+                _cleanup_staging(keep=10)
+                _cleanup_backups(keep=20)
+            except Exception as _e_cl:
+                print(f'[updater] cleanup after rollback failed: {_e_cl}')
             return jsonify({
                 'success': True,
                 'rolled_back': pid,
+                'rolled_back_deps': rolled_back_deps,
                 'new_version': new_v,
                 'output': out,
             })

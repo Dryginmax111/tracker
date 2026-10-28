@@ -92,7 +92,11 @@
         'body.trk-theme-light .plugin-page .kpi-v, body.trk-theme-light .plugin-page .sum-val, body.trk-theme-light .plugin-page .sum-card .v, body.trk-theme-light .plugin-page .k .v, body.trk-theme-light .plugin-page .s .v { color: #00695c !important; }',
         'body.trk-theme-light .plugin-page .kpi-v[style*="ec7063"], body.trk-theme-light .plugin-page .s.danger .v { color: #c62828 !important; }',
         'body.trk-theme-light .plugin-page .rank-avatar, body.trk-theme-light .plugin-page .dot { box-shadow: inset 0 0 0 1px rgba(0,0,0,0.15); }',
-        'body.trk-theme-light .plugin-page .trend-bar { background: linear-gradient(180deg, #00897b, #00695c); }'
+        'body.trk-theme-light .plugin-page .trend-bar { background: linear-gradient(180deg, #00897b, #00695c); }',
+        '/* PATCH v1.0.31 — спиннер для .loading во всех плагинах */',
+        'body.plugin-page .loading::before { content: ""; display: inline-block; width: 18px; height: 18px; border: 3px solid rgba(245,215,110,0.25); border-top-color: var(--pg-accent, #f5d76e); border-radius: 50%; animation: pgSpinV131 0.75s linear infinite; margin-right: 8px; vertical-align: middle; flex-shrink: 0; }',
+        '@keyframes pgSpinV131 { to { transform: rotate(360deg); } }',
+        'body.trk-theme-light .plugin-page .loading::before, body.trk-theme-light.plugin-page .loading::before { border-color: rgba(0,137,123,0.20); border-top-color: var(--pg-accent, #00695c); }'
     ].join('\n');
 
     function injectStyle() {

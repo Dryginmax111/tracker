@@ -89,7 +89,7 @@ def _trim_log(dbg, keep_bytes=1024 * 1024, quiet=False):
             print(f'  ! trk_debug.log: {e}')
 
 
-def cleanup(db_path, audit_days=90, notif_read_days=30, notif_done_days=7, dry=False, quiet=False):
+def cleanup(db_path, audit_days=90, notif_read_days=30, notif_done_days=7, dry=False, quiet=False, task_audit_days=180):
     src = Path(db_path)
     if not src.is_absolute():
         src = BASE / src
@@ -115,6 +115,19 @@ def cleanup(db_path, audit_days=90, notif_read_days=30, notif_done_days=7, dry=F
         if not quiet:
             print(f'  audit_log: < {audit_days} дн. -> {old}')
         total_deleted += old
+
+        # PATCH v1.0.28: TTL для task_audit (таблица может не существовать,
+        # если плагин task_audit отключён — очистка в try/except).
+        try:
+            cutoff_ta = f'-{int(task_audit_days)} days'
+            old_ta = _count(c, "SELECT COUNT(*) FROM task_audit WHERE ts < datetime('now','localtime',?)", (cutoff_ta,))
+            if old_ta and not dry:
+                c.execute("DELETE FROM task_audit WHERE ts < datetime('now','localtime',?)", (cutoff_ta,))
+            if not quiet and old_ta:
+                print(f'  task_audit: < {task_audit_days} дн. -> {old_ta}')
+            total_deleted += old_ta
+        except Exception:
+            pass  # таблицы нет или иная ошибка — не ломаем очистку
 
         cutoff_read = f'-{int(notif_read_days)} days'
         old = _count(c, "SELECT COUNT(*) FROM notifications WHERE read_at != '' AND read_at < datetime('now','localtime',?)", (cutoff_read,))
@@ -204,12 +217,15 @@ def main():
     ap.add_argument('--audit-days', type=int, default=90)
     ap.add_argument('--notif-days', type=int, default=30)
     ap.add_argument('--notif-done-days', type=int, default=7)
+    ap.add_argument('--task-audit-days', type=int, default=180,
+                    help='TTL для task_audit (история изменений задач), дней')
     args = ap.parse_args()
     db = _load_db_path(args.db)
     if not db:
         print('! Не найден config.json или db_path')
         return 1
-    return cleanup(db, args.audit_days, args.notif_days, args.notif_done_days, args.dry)
+    return cleanup(db, args.audit_days, args.notif_days, args.notif_done_days, args.dry,
+                   task_audit_days=args.task_audit_days)
 
 
 if __name__ == '__main__':

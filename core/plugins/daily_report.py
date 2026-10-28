@@ -262,9 +262,19 @@ def register(app, db, hooks):
 
     @app.route('/api/plugins/daily_report/selftest', methods=['GET'])
     def _dr_selftest():
-        """PATCH v1.1.9: диагностика — почему «не работает»: auth / routes / data."""
+        """Диагностика — только для администратора. PATCH v1.0.17: раньше
+        был открыт без авторизации, раскрывал username и пути из traceback."""
         import traceback as _tb
-        out = {'plugin_version': __version__}
+        try:
+            from auth import current_user, user_has
+            _su = current_user(db)
+            if not _su:
+                return jsonify({'success': False, 'error': 'auth'}), 401
+            if not (_su.get('role') == 'admin' or user_has(db, _su, 'tab.settings')):
+                return jsonify({'success': False, 'error': 'forbidden'}), 403
+        except Exception:
+            return jsonify({'success': False, 'error': 'auth'}), 401
+        out = {'success': True, 'plugin_version': __version__}
         try:
             from auth import current_user, user_has
             u = current_user(db)

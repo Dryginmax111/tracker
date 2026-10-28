@@ -70,6 +70,7 @@ CREATE TABLE IF NOT EXISTS tasks (
   completed_at TEXT DEFAULT '',
   folder TEXT DEFAULT '',
   order_ref TEXT DEFAULT '',
+  hypotheses_json TEXT DEFAULT '[]',
   created_at TEXT NOT NULL
 );
 
@@ -146,3 +147,14 @@ CREATE INDEX IF NOT EXISTS idx_logs_task ON work_logs (task_id);
 CREATE INDEX IF NOT EXISTS idx_assignees_emp ON task_assignees (employee_id);
 CREATE INDEX IF NOT EXISTS idx_audit_ts ON audit_log (ts);
 CREATE INDEX IF NOT EXISTS idx_audit_user ON audit_log (user_id);
+
+-- ============================================================
+-- PATCH v1.0.23 — индексы для фильтрации
+-- ============================================================
+CREATE INDEX IF NOT EXISTS idx_tasks_status ON tasks (status);
+CREATE INDEX IF NOT EXISTS idx_tasks_deadline ON tasks (deadline);
+CREATE INDEX IF NOT EXISTS idx_vac_emp ON employee_vacations (employee_id);
+CREATE INDEX IF NOT EXISTS idx_task_tags_tag ON task_tags (tag);
+CREATE INDEX IF NOT EXISTS idx_notif_to_read ON notifications (to_user_id, read_at);
+CREATE INDEX IF NOT EXISTS idx_team_members_emp ON team_members (employee_id);
+CREATE INDEX IF NOT EXISTS idx_logs_task_status ON work_logs (task_id, status);

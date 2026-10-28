@@ -860,7 +860,10 @@ def register(app, db, hooks):
         overdue_days.sort(key=lambda x: -x['count'])
 
         # Health score
-        total_active = statuses['active'] + statuses['paused'] + statuses['overdue']
+        # PATCH v1.0.37: overdue — подмножество active+paused (deadline < today
+        # при status in active/paused), поэтому total_active считал просроченные
+        # дважды и завышал health в 1.5 раза. Правильно — только active+paused.
+        total_active = statuses['active'] + statuses['paused']
         if total_active > 0:
             ov_rate = statuses['overdue'] / total_active
             stale_rate = len(stale) / total_active

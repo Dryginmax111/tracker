@@ -1,8 +1,8 @@
 {
-  "id": "v1.0.43-bell-full-fix-and-patcher-log",
-  "target_version": "1.0.43",
+  "id": "v1.0.1-bell-full-fix-and-patcher-log",
+  "target_version": "1.0.1",
   "requires": [],
-  "description": "Перевыпуск v1.0.43. (1) regex read_at='' -> TRIM(COALESCE(read_at,''))='' во всех 4 местах (list, read, read_all COUNT, read_all UPDATE) — прошлый regex WHERE read_at='' находил только 2. (2) _diag перед api_notifications_read (маркер без api_notifications_list — между @app.route и def стоит @login_required). (3) op_delete — optional:true, потому что v1.0.41 уже применился (ctx['log'] есть). (4) tracker.js — append IIFE с MutationObserver (без изменений).",
+  "description": "Перевыпуск v1.0.1. (1) regex read_at='' -> TRIM(COALESCE(read_at,''))='' во всех 4 местах (list, read, read_all COUNT, read_all UPDATE) — прошлый regex WHERE read_at='' находил только 2. (2) _diag перед api_notifications_read (маркер без api_notifications_list — между @app.route и def стоит @login_required). (3) op_delete — optional:true, потому что v1.0.41 уже применился (ctx['log'] есть). (4) tracker.js — append IIFE с MutationObserver (без изменений).",
   "operations": [
     {
       "type": "regex",

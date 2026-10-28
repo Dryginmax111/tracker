@@ -437,31 +437,38 @@ def _find_notification_recipients(db, employee_id, exclude_user_id=None, actor_u
         emp = db.query_one('SELECT department_id FROM employees WHERE id=?', (employee_id,))
         dept_id = (emp or {}).get('department_id') or ''
         head_eid = ''
+        # PATCH v1.0.24: один JOIN вместо двух SELECT (departments + users).
         if dept_id:
-            dept = db.query_one('SELECT head_employee_id FROM departments WHERE id=?', (dept_id,))
-            head_eid = (dept or {}).get('head_employee_id') or ''
-            if head_eid and head_eid != actor_eid:
-                hu = db.query_one('SELECT id FROM users WHERE employee_id=? AND is_active=1', (head_eid,))
-                if hu:
-                    vertical.add(hu['id'])
-        for r in db.query('SELECT id, manager_id FROM teams'):
-            mgr = (r.get('manager_id') or '').strip()
-            if not mgr or mgr == actor_eid:
-                continue
-            is_member = False
-            if mgr == employee_id:
-                is_member = True
-            else:
-                m = db.query_one(
-                    'SELECT 1 FROM team_members WHERE team_id=? AND employee_id=? LIMIT 1',
-                    (r['id'], employee_id),
-                )
-                is_member = bool(m)
-            if not is_member:
-                continue
-            mu = db.query_one('SELECT id FROM users WHERE employee_id=? AND is_active=1', (mgr,))
-            if mu:
-                vertical.add(mu['id'])
+            _head_row = db.query_one(
+                'SELECT d.head_employee_id AS hid, u.id AS uid '
+                'FROM departments d '
+                'LEFT JOIN users u ON u.employee_id = d.head_employee_id AND u.is_active=1 '
+                'WHERE d.id = ?',
+                (dept_id,),
+            )
+            head_eid = ((_head_row or {}).get('hid') or '')
+            if head_eid and head_eid != actor_eid and (_head_row or {}).get('uid'):
+                vertical.add(_head_row['uid'])
+        # PATCH v1.0.24: один JOIN teams+team_members вместо N+1.
+        # Возвращает manager_id команд, где employee_id — участник или сам менеджер.
+        # Исключаем actor_eid (он не получает уведомление о своих действиях).
+        _tm_rows = db.query(
+            'SELECT DISTINCT t.manager_id AS mid '
+            'FROM teams t '
+            'LEFT JOIN team_members tm ON tm.team_id = t.id AND tm.employee_id = ? '
+            'WHERE t.manager_id <> \'\' AND t.manager_id <> ? '
+            '  AND (t.manager_id = ? OR tm.employee_id IS NOT NULL)',
+            (employee_id, actor_eid, employee_id),
+        )
+        _mgr_eids = [r['mid'] for r in _tm_rows if r.get('mid')]
+        if _mgr_eids:
+            _ph = ','.join('?' * len(_mgr_eids))
+            for _u in db.query(
+                f'SELECT id FROM users WHERE employee_id IN ({_ph}) AND is_active=1',
+                tuple(_mgr_eids),
+            ):
+                if _u and _u.get('id'):
+                    vertical.add(_u['id'])
         actor_is_boss = _actor_is_manager_of(db, actor_user, employee_id) if actor_user else False
         if actor_is_boss:
             recipients |= vertical
@@ -1068,6 +1075,15 @@ def create_app():
             print('[INIT] work_logs.links_json добавлено')
     except Exception as _e:
         print(f'[INIT] migration work_logs json: {_e}')
+    # PATCH v1.5.0: миграция — hyp_item_id в work_logs (привязка отметки к гипотезе/заданию)
+    try:
+        cols = [r['name'] for r in db.query('PRAGMA table_info(work_logs)')]
+        if 'hyp_item_id' not in cols:
+            db.exec("ALTER TABLE work_logs ADD COLUMN hyp_item_id TEXT DEFAULT ''")
+            print('[INIT] work_logs.hyp_item_id добавлено')
+    except Exception as _e:
+        print(f'[INIT] migration hyp_item_id: {_e}')
+
     app.config['DB'] = db
     app.config['APP_CONFIG'] = cfg
 
@@ -1187,6 +1203,14 @@ def create_app():
             log_days = int(request.args.get('log_days', 365))
         except (ValueError, TypeError):
             log_days = 365
+        # PATCH v1.0.34: clamp. log_days=999999 уводил cutoff в 1900-е →
+        # полная загрузка work_logs в память (OOM на большой БД).
+        # log_days=-1 падал в else → _data(db) без since, тоже полная загрузка.
+        # 0 — оставлен маркером 'весь лог' (осознанный выбор пользователя).
+        if log_days < 0:
+            log_days = 365
+        elif log_days > 3650:
+            log_days = 3650
         # PATCH v2: используем load_all(since=...) — не грузим старые логи в память
         if log_days > 0:
             _cutoff = (date.today() - timedelta(days=log_days)).strftime('%Y-%m-%d')
@@ -1201,6 +1225,12 @@ def create_app():
             tt = dict(t)
             tt['overdue'] = _is_overdue(t, today)
             tt['completion_kind'] = _completion_kind(t)
+            try:
+                tt['hypotheses'] = json.loads(t.get('hypotheses_json') or '[]')
+                if not isinstance(tt['hypotheses'], list):
+                    tt['hypotheses'] = []
+            except Exception:
+                tt['hypotheses'] = []
             tasks.append(tt)
 
         all_tags = sorted({tag for t in data['tasks'] for tag in (t.get('tags') or [])})
@@ -1310,6 +1340,18 @@ def create_app():
             print(f'[employee_save] auto-create user failed: {e}')
 
         return jsonify({'success': True, 'id': emp_id, 'created': created})
+
+        # PATCH v1.2.0: справочник должностей — из уже заполненных данных (employees.role)
+    @app.route('/api/tracker/roles', methods=['GET'])
+    @permission_required('action.employee.create')
+    def api_tracker_roles():
+        rows = db.query(
+            "SELECT DISTINCT role FROM employees "
+            "WHERE role IS NOT NULL AND TRIM(role) <> '' ORDER BY role COLLATE NOCASE"
+        )
+        roles = sorted({str(r['role']).strip() for r in rows if str(r['role'] or '').strip()},
+                       key=lambda s: s.lower())
+        return jsonify({'success': True, 'roles': roles})
 
     @app.route('/api/tracker/employee/delete', methods=['POST'])
     @login_required
@@ -1532,6 +1574,98 @@ def create_app():
         _audit(db, current_user(db), 'delete', 'team', tid, {})
         return jsonify({'success': True})
 
+    # PATCH v1.4.3: санитайзер дерева «Проверка -> Гипотезы -> Задания».
+    # Принимает ОБА формата: (A) плоский массив [{kind,parent}], (B) дерево {tasks:[]}.
+    # Статус по умолчанию — 'in_progress' (В работе).
+    def _clean_hyp_tree(raw, valid_emps):
+        import re as _re_h
+        out = []
+        used_ids = set()
+        if not isinstance(raw, list):
+            return out
+        def _uniq(hid, title):
+            base = hid
+            n = 2
+            while hid in used_ids:
+                hid = f'{base}_{n}'
+                n += 1
+            used_ids.add(hid)
+            return hid
+        def _mk(item, kind, parent_no):
+            title = str(item.get('title', '') if isinstance(item, dict) else '').strip()[:200]
+            if not title:
+                return None
+            desc = str(item.get('description', '') if isinstance(item, dict) else '').strip()[:4000]
+            d_from = str(item.get('date_from', '') if isinstance(item, dict) else '').strip()[:10]
+            d_to = str(item.get('date_to', '') if isinstance(item, dict) else '').strip()[:10]
+            if d_from and not _valid_date(d_from):
+                d_from = ''
+            if d_to and not _valid_date(d_to):
+                d_to = ''
+            st = str(item.get('status', '') if isinstance(item, dict) else '').strip().lower()[:10]
+            if st not in ('planned', 'in_progress', 'done', 'failed'):
+                st = 'in_progress'
+            _asg = item.get('assignees') if isinstance(item, dict) else []
+            if not isinstance(_asg, list):
+                _asg = []
+            asg = []
+            for a in _asg[:50]:
+                a = str(a).strip()
+                if a and a in valid_emps and a not in asg:
+                    asg.append(a)
+            hid = str(item.get('id', '') if isinstance(item, dict) else '').strip()[:64]
+            if not hid or not _re_h.match(r'^[A-Za-z0-9_-]+$', hid):
+                hid = 'h' + format(abs(hash(title + str(len(out)))) % 10**12, 'x')
+            hid = _uniq(hid, title)
+            return {'id': hid, 'kind': kind, 'parent': parent_no, 'no': len(out) + 1,
+                    'title': title, 'description': desc, 'date_from': d_from,
+                    'date_to': d_to, 'status': st, 'assignees': asg}
+        is_flat = False
+        for _x in raw[:100]:
+            if isinstance(_x, dict) and str(_x.get('kind', '')).strip() == 'task':
+                is_flat = True
+                break
+        if is_flat:
+            hyp_map = {}
+            for item in raw[:200]:
+                if not isinstance(item, dict):
+                    continue
+                if str(item.get('kind', '')).strip() != 'hypothesis':
+                    continue
+                hh = _mk(item, 'hypothesis', '')
+                if not hh:
+                    continue
+                out.append(hh)
+                _orig = str(item.get('id', '')).strip()
+                if _orig:
+                    hyp_map[_orig] = hh['id']
+            for item in raw[:200]:
+                if not isinstance(item, dict):
+                    continue
+                if str(item.get('kind', '')).strip() != 'task':
+                    continue
+                _op = str(item.get('parent', '')).strip()
+                _np = hyp_map.get(_op, '')
+                if not _np:
+                    continue
+                tt = _mk(item, 'task', _np)
+                if tt:
+                    out.append(tt)
+            return out
+        for h in raw[:100]:
+            hh = _mk(h, 'hypothesis', '')
+            if not hh:
+                continue
+            out.append(hh)
+            children = h.get('tasks') if isinstance(h, dict) else []
+            if not isinstance(children, list):
+                children = []
+            for tk in children[:100]:
+                tt = _mk(tk, 'task', hh['id'])
+                if tt:
+                    out.append(tt)
+        return out
+
     # ============================================================
     # API: TASKS
     # ============================================================
@@ -1540,6 +1674,35 @@ def create_app():
     def api_task_save():
         body = request.get_json() or {}
         task_id = str(body.get('id', '')).strip()
+        # PATCH v1.0.16: partial update — только указанные поля.
+        # Используется автоназначением при сохранении отметки: клиент шлёт
+        # {id, assignees, partial: ['assignees']} и не может случайно
+        # затереть description/folder/links/orders/hypotheses.
+        _partial = body.get('partial')
+        if isinstance(_partial, list) and _partial and task_id:
+            _pu = current_user(db)
+            if not user_has(db, _pu, 'action.task.edit'):
+                return jsonify({'success': False, 'error': 'forbidden', 'need': 'action.task.edit'}), 403
+            _supported = {'assignees'}
+            _unknown = [x for x in _partial if x not in _supported]
+            if _unknown:
+                return jsonify({'success': False, 'error': 'unsupported partial fields: ' + ', '.join(map(str, _unknown))}), 400
+            _exists = db.query_one('SELECT id FROM tasks WHERE id=?', (task_id,))
+            if not _exists:
+                return jsonify({'success': False, 'error': 'task not found'}), 404
+            if 'assignees' in _partial:
+                _a_raw = body.get('assignees') or []
+                if not isinstance(_a_raw, list):
+                    _a_raw = []
+                _a = [str(x).strip() for x in _a_raw if str(x).strip()]
+                _valid = {e['id'] for e in _data(db)['employees']}
+                _a = [x for x in _a if x in _valid]
+                with db.transaction() as _tx:
+                    _tx.exec('DELETE FROM task_assignees WHERE task_id=?', (task_id,))
+                    for _eid in _a:
+                        _tx.exec('INSERT OR IGNORE INTO task_assignees (task_id, employee_id) VALUES (?,?)', (task_id, _eid))
+                _audit(db, _pu, 'update', 'task', task_id, {'partial': 'assignees', 'count': len(_a)})
+            return jsonify({'success': True, 'id': task_id, 'created': False, 'partial': _partial})
         name = str(body.get('name', '')).strip()[:200]
         icon = str(body.get('icon', '')).strip()[:8] or '📋'
         description = str(body.get('description', '')).strip()[:2000]
@@ -1677,6 +1840,11 @@ def create_app():
                     if len(_name_norm) >= 5 and len(_tn) >= 5:
                         if _tn in _name_norm or _name_norm in _tn:
                             _similar.append({'id': _t['id'], 'name': _t.get('name') or ''})
+                        elif abs(len(_name_norm) - len(_tn)) > 3:
+                            # PATCH v1.0.25: предфильтр по длине. Levenshtein(a,b)
+                            # >= |len(a) - len(b)| — если разница > 3, точно > 2.
+                            # Пропускаем дорогое вычисление без потери точности.
+                            continue
                         elif _lev(_name_norm, _tn) <= 2:
                             _similar.append({'id': _t['id'], 'name': _t.get('name') or ''})
             except Exception as _e:
@@ -1802,6 +1970,9 @@ def create_app():
         if status not in ('done', 'archived'):
             completed_at = ''
 
+        hyp_raw = body.get('hypotheses')
+        _v_emp = {e['id'] for e in data['employees']}
+        hyp_tree = _clean_hyp_tree(hyp_raw if isinstance(hyp_raw, list) else [], _v_emp)
         created = db.upsert_task(task_id, {
             'name': name, 'icon': icon, 'description': description,
             'status': status, 'start_date': start_date, 'deadline': deadline,
@@ -1811,6 +1982,7 @@ def create_app():
             'is_urgent': is_urgent,
             'links': links,
             'orders': orders,
+            'hypotheses': hyp_tree,
         })
         # PATCH v1.0.9: если админ вручную вернул задачу из done в другой
         # статус — снимаем метку авто (статус снова считается решением админа).
@@ -1856,6 +2028,37 @@ def create_app():
             except Exception as _e:
                 print(f'[notify] task_created hook failed: {_e}')
         return jsonify({'success': True, 'id': task_id, 'created': created})
+
+    @app.route('/api/tracker/hypothesis/status', methods=['POST'])
+    @login_required
+    def api_hypothesis_status():
+        """Быстрая смена статуса гипотезы/задания без пересохранения задачи."""
+        body = request.get_json() or {}
+        task_id = str(body.get('task_id', '')).strip()
+        item_id = str(body.get('item_id', '')).strip()
+        new_status = str(body.get('status', '')).strip()
+        if not task_id or not item_id or new_status not in ('planned', 'in_progress', 'done', 'failed'):
+            return jsonify({'success': False, 'error': 'Некорректные параметры'}), 400
+        t = db.query_one('SELECT hypotheses_json FROM tasks WHERE id=?', (task_id,))
+        if not t:
+            return jsonify({'success': False, 'error': 'Задача не найдена'}), 404
+        try:
+            hyp_tree = json.loads(t.get('hypotheses_json') or '[]')
+            if not isinstance(hyp_tree, list):
+                hyp_tree = []
+        except Exception:
+            hyp_tree = []
+        found = False
+        for item in hyp_tree:
+            if str(item.get('id')) == item_id:
+                item['status'] = new_status
+                found = True
+                break
+        if not found:
+            return jsonify({'success': False, 'error': 'Не найдено'}), 404
+        db.exec('UPDATE tasks SET hypotheses_json=? WHERE id=?',
+                (json.dumps(hyp_tree, ensure_ascii=False), task_id))
+        return jsonify({'success': True})
 
     @app.route('/api/tracker/task/delete', methods=['POST'])
     @login_required
@@ -1977,7 +2180,9 @@ def create_app():
                     (name, icon, description, status, start_date, deadline, completed_at,
                      folder_field, order_ref_field, survivor_id))
                 _ph = ','.join('?' * len(merge_ids))
-                tx.exec('UPDATE work_logs SET task_id=? WHERE task_id IN (' + _ph + ')',
+                # PATCH v1.5.0: при merge hyp_item_id обнуляем — гипотезы
+                # survivor'а другие, старые ссылки были бы битыми
+                tx.exec('UPDATE work_logs SET task_id=?, hyp_item_id=\'\' WHERE task_id IN (' + _ph + ')',
                         tuple([survivor_id] + merge_ids))
                 tx.exec('DELETE FROM task_tags WHERE task_id=?', (survivor_id,))
                 for tag in sorted(all_tags):
@@ -2014,6 +2219,8 @@ def create_app():
         comment = str(body.get('comment', '')).strip()[:2000]
         status = str(body.get('status', 'in_progress')).strip()[:20]
         link = str(body.get('link', '')).strip()[:500]
+        # PATCH v1.5.0: привязка к гипотезе/заданию задачи
+        hyp_item_id = str(body.get('hyp_item_id', '') or '').strip()[:64]
         # PATCH v1.0.4: описание + multi-поля
         _desc_from_body = str(body.get('description', '') or '').strip()[:2000]
         if _desc_from_body:
@@ -2210,6 +2417,23 @@ def create_app():
                         'is_holiday': _is_holiday_save,
                         'message': _msg_ovf,
                     }), 409
+        # PATCH v1.5.0: проверка hyp_item_id — должен принадлежать hypotheses_json этой задачи
+        if hyp_item_id:
+            _hyp_ok = False
+            try:
+                _t_row = db.query_one('SELECT hypotheses_json FROM tasks WHERE id=?', (task_id,))
+                if _t_row:
+                    _hyps_data = json.loads(_t_row.get('hypotheses_json') or '[]')
+                    if isinstance(_hyps_data, list):
+                        for _it in _hyps_data:
+                            if isinstance(_it, dict) and str(_it.get('id', '')).strip() == hyp_item_id:
+                                _hyp_ok = True
+                                break
+            except Exception as _e:
+                print(f'[log_save] hyp_item_id validate: {_e}')
+            if not _hyp_ok:
+                hyp_item_id = ''
+
         # PATCH v1.0.4: сериализация multi-полей
         _extra_json = json.dumps(extra_data, ensure_ascii=False) if extra_data else '[]'
         _orders_json = json.dumps(orders, ensure_ascii=False) if orders else '[]'
@@ -2222,6 +2446,7 @@ def create_app():
                 'extra_data_json': _extra_json,
                 'orders_json': _orders_json,
                 'links_json': _links_json,
+                'hyp_item_id': hyp_item_id,
             }
         )
         _audit(db, u, 'create' if created else 'update', 'log', log_id_raw or created,
@@ -2257,7 +2482,10 @@ def create_app():
         _merge_into_task = bool(body.get('merge_into_task'))
         _merge_info = None
         _has_merge_payload = bool(extra_data or orders or links) or bool((comment or '').strip())
-        if task_id and _merge_into_task and _has_merge_payload:
+        # PATCH v1.5.2: НЕ сливаем в задачу, если отметка привязана к гипотезе/заданию.
+        # Описание/приказы/ссылки привязанных отметок остаются в work_logs,
+        # отображаются только в ленте «📝 Отметки о ходе работы» под гипотезой.
+        if task_id and _merge_into_task and _has_merge_payload and not hyp_item_id:
             try:
                 _merge_info = _merge_log_data_into_task(
                     db, task_id, employee_id, u,
@@ -4683,7 +4911,7 @@ def create_app():
         else:
             rows = db.query(
                 'SELECT id, ts, from_user_id, from_username, kind, task_id, employee_id, message, status, read_at '
-                "FROM notifications WHERE to_user_id=? AND read_at='' ORDER BY id DESC LIMIT ?",
+                "FROM notifications WHERE to_user_id=? AND TRIM(COALESCE(read_at,''))='' ORDER BY id DESC LIMIT ?",
                 (u['id'], limit),
             )
         unread = sum(1 for r in rows if not r.get('read_at'))
@@ -4696,10 +4924,33 @@ def create_app():
         if (u or {}).get('role') != 'admin':
             return jsonify({'success': False, 'error': 'forbidden'}), 403
         now = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
-        before = db.query_one("SELECT COUNT(*) AS n FROM notifications WHERE read_at=''") or {'n': 0}
-        db.exec("UPDATE notifications SET read_at=? WHERE read_at=''", (now,))
+        before = db.query_one("SELECT COUNT(*) AS n FROM notifications WHERE TRIM(COALESCE(read_at,''))=''") or {'n': 0}
+        db.exec("UPDATE notifications SET read_at=? WHERE TRIM(COALESCE(read_at,''))=''", (now,))
         _audit(db, u, 'update', 'notifications', 'all', {'cleared': before.get('n', 0)})
         return jsonify({'success': True, 'cleared': before.get('n', 0)})
+
+    @app.route('/api/notifications/_diag', methods=['GET'])
+    @login_required
+    def api_notifications_diag():
+        # PATCH v1.0.43: диагностика «почему Прочитать все не гасит».
+        u = current_user(db)
+        total = db.query_one('SELECT COUNT(*) AS n FROM notifications WHERE to_user_id=?', (u['id'],)) or {'n': 0}
+        unread = db.query_one(
+            "SELECT COUNT(*) AS n FROM notifications WHERE to_user_id=? AND TRIM(COALESCE(read_at,''))=''",
+            (u['id'],),
+        ) or {'n': 0}
+        samples = db.query(
+            'SELECT id, read_at, typeof(read_at) AS rt_type, ts, kind '
+            'FROM notifications WHERE to_user_id=? ORDER BY id DESC LIMIT 5',
+            (u['id'],),
+        )
+        return jsonify({
+            'success': True,
+            'user': {'id': u['id'], 'username': u['username'], 'role': u['role']},
+            'total': total.get('n', 0),
+            'unread': unread.get('n', 0),
+            'samples': samples,
+        })
 
     @app.route('/api/notifications/read', methods=['POST'])
     @login_required
@@ -4719,7 +4970,7 @@ def create_app():
             )
         else:
             db.exec(
-                "UPDATE notifications SET read_at=? WHERE to_user_id=? AND read_at=''",
+                "UPDATE notifications SET read_at=? WHERE to_user_id=? AND TRIM(COALESCE(read_at,''))=''",
                 (now, u['id']),
             )
         return jsonify({'success': True})

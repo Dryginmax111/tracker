@@ -213,6 +213,9 @@ var meta = document.querySelector('meta[name="csrf-token"]');
 if (!CSRF && meta) CSRF = meta.getAttribute('content') || '';
 
 var _tagDraft = [];
+// PATCH v1.0.19: экспортируем ссылку на массив, чтобы PATCH 1.0.8::_forceTagDraft
+// мог мутировать её (а не заменять reference), и saveTask видел теги.
+window.__trkTagDraft = _tagDraft;
 var _logExistingMode = 'me';
 var _logExistingEmpId = '';
 
@@ -790,7 +793,8 @@ function loadState() {
         // PATCH 1.0.9: читаем сохранённый вид задач
         try {
             var _tv109 = localStorage.getItem('tracker_tsk_view');
-            if (_tv109 !== 'tile' && _tv109 !== 'compact' && _tv109 !== 'list') _tv109 = 'tile';
+            // PATCH v1.0.22: 'tree' тоже допустим — раньше слетал в 'tile'.
+            if (_tv109 !== 'tile' && _tv109 !== 'compact' && _tv109 !== 'list' && _tv109 !== 'tree') _tv109 = 'tile';
             state.tskView = _tv109;
         } catch (e) { state.tskView = 'tile'; }
         applyPermsToUI();
@@ -814,9 +818,18 @@ function applyPermsToUI() {
         ['dayClearBtn', 'action.log.delete.any'],
         ['trkMaskToggle', 'action.mask.use'],
     ];
+    // PATCH v1.0.21: не только скрываем, но и показываем обратно — с пометкой
+    // data-perm-hidden, чтобы не затирать display, выставленный другими обработчиками.
     map.forEach(function(p) {
         var el = $(p[0]);
-        if (el && !hasPerm(p[1])) el.style.display = 'none';
+        if (!el) return;
+        if (!hasPerm(p[1])) {
+            el.style.display = 'none';
+            el.setAttribute('data-perm-hidden', '1');
+        } else if (el.getAttribute('data-perm-hidden') === '1') {
+            el.style.display = '';
+            el.removeAttribute('data-perm-hidden');
+        }
     });
 }
 
@@ -1041,9 +1054,41 @@ function taskCardRow(t) {
 /* PATCH v1.0.10: K/N по задаче — сколько исполнителей уже закрыли */
 var _lastDoneCacheClient = null;
 var _lastDoneCacheClientSrc = null;
+var _lastDoneCacheClientHash = 0;
+// PATCH v1.0.36: хэш по (id, status, date). v1.0.27 ловил только append —
+// редактирование существующего лога (in_progress→done) не детектировалось,
+// K/N на плитке не обновлялся. Хэш O(N) с малой константой ловит любые
+// изменения и остаётся в 10 раз быстрее полного _buildLastDoneMap.
+function _lastDoneHashOf(logs) {
+    var h = 2166136261;
+    for (var i = 0; i < logs.length; i++) {
+        var l = logs[i];
+        if (!l) continue;
+        h = (h ^ (l.id | 0)) >>> 0;
+        h = Math.imul(h, 16777619) >>> 0;
+        var st = String(l.status || '');
+        var sc = st.length > 0 ? st.charCodeAt(0) : 0;
+        h = (h ^ sc) >>> 0;
+        h = Math.imul(h, 16777619) >>> 0;
+        var d = String(l.date || '');
+        h = (h ^ (d.length * 31)) >>> 0;
+        h = Math.imul(h, 16777619) >>> 0;
+        if (d.length >= 4) {
+            h = (h ^ (d.charCodeAt(d.length-1) | (d.charCodeAt(d.length-2) << 8))) >>> 0;
+            h = Math.imul(h, 16777619) >>> 0;
+        }
+    }
+    return h >>> 0;
+}
 function _buildLastDoneMapClient() {
-    var m = {};
     var logs = (state && state.log) || [];
+    var curHash = _lastDoneHashOf(logs);
+    if (_lastDoneCacheClient && curHash === _lastDoneCacheClientHash) {
+        var cached = {};
+        for (var k in _lastDoneCacheClient) cached[k] = _lastDoneCacheClient[k];
+        return cached;
+    }
+    var m = {};
     for (var i = 0; i < logs.length; i++) {
         var l = logs[i];
         if (!l || l.status !== 'done') continue;
@@ -1051,9 +1096,11 @@ function _buildLastDoneMapClient() {
         var tid = l.task_id;
         var d = l.date || '';
         if (!eid || !tid || !d) continue;
-        var k = tid + '|' + eid;
-        if (!m[k] || d > m[k]) m[k] = d;
+        var key = tid + '|' + eid;
+        if (!m[key] || d > m[key]) m[key] = d;
     }
+    _lastDoneCacheClientHash = curHash;
+    _lastDoneCacheClient = m;
     return m;
 }
 function _taskProgressClient(t) {
@@ -1466,10 +1513,16 @@ function renderTasksFull() {
     list.style.maxHeight = 'none';
     list.style.display = 'grid';
     // PATCH v1.0.12: компактный режим (data-compact=1)
-    if (_view === 'compact') {
+    if (_view === 'compact' || _view === 'tree') {
         list.setAttribute('data-compact', '1');
+        if (_view === 'tree') {
+            list.setAttribute('data-view', 'tree');
+        } else {
+            list.removeAttribute('data-view');
+        }
     } else {
         list.removeAttribute('data-compact');
+        list.removeAttribute('data-view');
     }
     list.innerHTML = html;
     bindTaskCardActions(list, '.task-card');
@@ -2468,7 +2521,9 @@ var _vacEditId = null; // v1.1.6: id периода, редактируемог�
 function openEmployeeModal(emp) {
     emp = emp || null;
     _vacDraftEmpId = emp ? emp.id : null;
-    var t = $('employeeModalTitle'); if (t) t.textContent = emp ? 'Редактировать сотрудника' : 'Новый сотрудник';
+    // PATCH v1.2.0: заголовок карточки фиксированный — режим показываем подзаголовком
+var t = $('employeeModalTitle'); if (t) t.textContent = 'Карточка сотрудника';
+var ts = $('employeeModalSubtitle'); if (ts) ts.textContent = emp ? ('Изменение: ' + (emp.name || '')) : 'Новый сотрудник';
     var g = function(id, v) { var el = $(id); if (el) el.value = v; };
     g('emp_id', emp ? emp.id : '');
     g('emp_name', emp ? emp.name : '');
@@ -2621,6 +2676,9 @@ function saveEmployee() {
         body: JSON.stringify(payload)
     }).then(function(d) {
         if (!d.success) throw new Error(d.error || 'Ошибка');
+        // PATCH v1.2.0: после сохранения перечитываем справочник должностей,
+        // чтобы новый вариант сразу появился в выпадающем списке.
+        try { if (window.__trkRolesV120 && window.__trkRolesV120.reload) window.__trkRolesV120.reload(); } catch (x) {}
         var m = $('employeeModal'); if (m) m.classList.remove('active');
         return trkRefreshAll();
     }).catch(function(err) { if (err && (err.message || '').indexOf('cancelled') !== -1) return; notify('❌ ' + (err.message || 'Ошибка'), 'error'); });
@@ -2634,6 +2692,8 @@ function deleteEmployee(id) {
         body: JSON.stringify({ id: id })
     }).then(function(d) {
         if (!d.success) throw new Error(d.error || 'Ошибка');
+        // PATCH v1.3.2: черновик дерева чистим после успешного сохранения
+        window.__trkHypDraft = [];
         return trkRefreshAll();
     }).catch(function(err) { if (err && (err.message || '').indexOf('cancelled') !== -1) return; notify('❌ ' + (err.message || 'Ошибка'), 'error'); });
 }
@@ -2989,6 +3049,47 @@ function openTaskModal(task) {
     renderTaskDepartmentsList(depIds);
     renderAssigneesList((task && task.assignees) || [], depIds);
     syncTaskCompletedAt();
+    // PATCH v1.4.3: загрузка дерева с защитой от race condition + fallback-fetch сотрудников
+    var _freshTask = task;
+    try {
+        if (task && task.id && window.__trkState && Array.isArray(window.__trkState.tasks)) {
+            _freshTask = window.__trkState.tasks.find(function(x){ return x && x.id === task.id; }) || task;
+        }
+    } catch(e){ _freshTask = task; }
+    var _hd = (_freshTask && Array.isArray(_freshTask.hypotheses)) ? JSON.parse(JSON.stringify(_freshTask.hypotheses)) : [];
+    var _hm = _hd.filter(function(x){ return x && x.kind === 'hypothesis'; });
+    var _nm = [];
+    for (var _hi = 0; _hi < _hm.length; _hi++) {
+        _nm.push(_hm[_hi]);
+        _hd.forEach(function(x){ if (x && x.kind === 'task' && x.parent === _hm[_hi].id) _nm.push(x); });
+    }
+    _hd.forEach(function(x){ if (x && _nm.indexOf(x) === -1) _nm.push(x); });
+    window.__trkHypDraft = _nm;
+    var _renderTreeAfter = function(){
+        var _hb2 = document.getElementById('hypCountBadge');
+        if (_hb2) _hb2.textContent = _hm.length + ' гип., ' + _nm.filter(function(x){return x && x.kind === 'task';}).length + ' зад.';
+        if (typeof window.__renderHypTree === 'function') window.__renderHypTree();
+        else if (typeof renderHypTree === 'function') renderHypTree();
+    };
+    var _stV = window.__trkState || {};
+    if (_stV.employees && _stV.employees.length) {
+        _renderTreeAfter();
+    } else {
+        var _rootV = document.getElementById('hypTreeRoot');
+        if (_rootV) _rootV.innerHTML = '<div class="hyp-empty">Загрузка сотрудников…</div>';
+        fetch('/api/tracker/state', {credentials: 'same-origin', cache: 'no-store'})
+            .then(function(r){ return r.json(); })
+            .then(function(d){
+                if (d && d.success && window.__trkState) {
+                    if (d.employees) window.__trkState.employees = d.employees;
+                    if (d.tasks) window.__trkState.tasks = d.tasks;
+                    if (d.departments) window.__trkState.departments = d.departments;
+                    if (d.teams) window.__trkState.teams = d.teams;
+                }
+                _renderTreeAfter();
+            })
+            .catch(function(){ _renderTreeAfter(); });
+    }
     var m = $('taskModal'); if (m) m.classList.add('active');
     setTimeout(function() { var n = $('task_name'); if (n) n.focus(); }, 50);
 }
@@ -3014,6 +3115,18 @@ function saveTask() {
         is_urgent: $('task_is_urgent') ? !!$('task_is_urgent').checked : false,
         links: (_taskLinksDraft || []).slice(),
         orders: (_taskOrdersDraft || []).slice(),
+        // PATCH v1.4.3: плоский черновик → дерево {hypothesis, tasks:[]}
+        hypotheses: (function(){
+            var _flat = (window.__trkHypDraft || []).slice();
+            var _hyps = _flat.filter(function(x){ return x && x.kind === 'hypothesis'; });
+            return _hyps.map(function(h){
+                var item = Object.assign({}, h);
+                item.tasks = _flat.filter(function(x){
+                    return x && x.kind === 'task' && x.parent === h.id;
+                });
+                return item;
+            });
+        })(),
     };
     // PATCH v1.0.15: закрываем карточку СРАЗУ — пользователь видит
     // лоадер («Загрузка…»), а не пустую модалку. При ошибке вернём.
@@ -3358,11 +3471,19 @@ function renderSummaryGrid() {
                 + '</div></td>'
                 + '<td class="task-cell empty">— нет задач —</td>'
                 + days.map(function(dk) {
-                    var m = dm[dk] || {}, abs = absMap[dk], cls = ['empty-cell'], content = '·';
+                    var m = dm[dk] || {}, abs = absMap[dk], cls = ['empty-cell', 'day-cell'], content = '·';
                     if (abs) { cls.push('absence-' + abs); content = absenceIcon(abs); }
                     else if (m.is_holiday) cls.push('holiday-day');
                     else if (m.is_weekend) cls.push('weekend-day');
-                    return '<td class="' + cls.join(' ') + '" title="' + escapeHtml(dk) + '">' + content + '</td>';
+                    // PATCH v1.0.13: у сотрудников без задач отсутствие тоже кликабельно.
+                    var absAttrs = abs
+                        ? ' data-emp="' + escapeHtml(r.employee_id) + '" data-date="' + escapeHtml(dk) + '" data-absence="' + escapeHtml(abs) + '"'
+                        : '';
+                    var absTitle = abs
+                        ? escapeHtml(formatDateHuman(dk) + ' · ' + absenceLabel(abs))
+                        : escapeHtml(dk);
+                    var absCursor = abs ? ' style="cursor:pointer;"' : '';
+                    return '<td class="' + cls.join(' ') + '"' + absAttrs + absCursor + ' title="' + absTitle + '">' + content + '</td>';
                 }).join('')
                 + (showTotals ? '<td class="total-cell">0 ч</td>' : '')
                 + '</tr>';
@@ -3435,7 +3556,15 @@ function renderSummaryGrid() {
                     else if (m.is_holiday) cls.push('holiday-day');
                     else if (m.is_weekend) cls.push('weekend-day');
                     else cls.push('empty-cell');
-                    body += '<td class="day-cell ' + cls.join(' ') + '" title="' + escapeHtml(dk) + '">' + content + '</td>';
+                    // PATCH v1.0.12: отсутствие кликабельно — открывает #absenceInfoModal.
+                    var absAttrs = abs
+                        ? ' data-emp="' + escapeHtml(r.employee_id) + '" data-date="' + escapeHtml(dk) + '" data-absence="' + escapeHtml(abs) + '"'
+                        : '';
+                    var absTitle = abs
+                        ? escapeHtml(formatDateHuman(dk) + ' · ' + absenceLabel(abs))
+                        : escapeHtml(dk);
+                    var absCursor = abs ? ' style="cursor:pointer;"' : '';
+                    body += '<td class="day-cell ' + cls.join(' ') + '"' + absAttrs + absCursor + ' title="' + absTitle + '">' + content + '</td>';
                     return;
                 }
                 var extraCls = '';
@@ -3460,13 +3589,22 @@ function renderSummaryGrid() {
 
     wrap.innerHTML = '<table class="sum-table grid-table"><thead>' + head + head2 + '</thead><tbody>' + body + '</tbody></table>';
 
-    wrap.querySelectorAll('td.day-cell[data-emp]').forEach(function(td) {
+    // PATCH v1.0.13: расширенный селектор — покрывает обе ветки (с задачами
+    // и без задач). :not(.emp-cell) исключает ячейку с именем сотрудника —
+    // у неё свой обработчик (openEmpCardModal).
+    wrap.querySelectorAll('td[data-emp]:not(.emp-cell)').forEach(function(td) {
         td.addEventListener('click', function(e) {
             e.stopPropagation();
+            // PATCH v1.0.12: клик по ячейке отсутствия — окно с информацией.
+            if (this.hasAttribute('data-absence')) {
+                showAbsenceInfo(this.getAttribute('data-emp'), this.getAttribute('data-date'), this.getAttribute('data-absence'));
+                return;
+            }
             if (this.getAttribute('data-task') === '__collapsed__') {
                 openEmpDayModal(this.getAttribute('data-emp'), this.getAttribute('data-date'));
                 return;
             }
+            if (!this.hasAttribute('data-task')) return;
             openGridCellDetails(this.getAttribute('data-emp'), this.getAttribute('data-task'), this.getAttribute('data-date'));
         });
     });
@@ -3511,6 +3649,57 @@ function renderSummaryGrid() {
     if (extras) extras.innerHTML = _summaryLegendHtml() + _summaryExtrasHtml(d);
     initSummaryResizers();
 }
+
+/* PATCH v1.0.12: окно с информацией об отсутствии.
+   Используется и в Grid, и в Compact/Full — по клику на ячейку с data-absence.
+   Источник — state.employees[].vacations, запись, в чей период [from; to] попадает dk. */
+function showAbsenceInfo(empId, dk, absType) {
+    var emp = state.employees.find(function(e){ return e.id === empId; });
+    var body = document.getElementById('absenceInfoBody');
+    var m = document.getElementById('absenceInfoModal');
+    if (!emp || !body || !m) return;
+    var absLbl = absenceLabel(absType);
+    var rec = null;
+    (emp.vacations || []).forEach(function(v) {
+        if (!v.from || !v.to) return;
+        if (v.from <= dk && dk <= v.to && (v.type || 'vacation') === absType) rec = v;
+    });
+    var badgeCls = absType === 'sick_leave' ? 'sick'
+                 : (absType === 'business_trip' ? 'trip'
+                 : (absType === 'remote' ? 'remote' : 'vac'));
+    var h = '<div class="emp-day-head" style="margin-bottom:14px;">'
+        + '<div class="emp-day-avatar" style="background:' + escapeHtml(emp.color || '#888') + ';box-shadow:0 0 10px ' + escapeHtml(emp.color || '#888') + ';">'
+        +     escapeHtml(initials(emp.name)) + '</div>'
+        + '<div class="emp-day-info">'
+        +   '<div class="emp-day-name">' + escName(emp.name) + '</div>'
+        +   '<div class="emp-day-role">' + escapeHtml(emp.role || '')
+        +     (emp.department ? ' · 🏢 ' + escapeHtml(emp.department) : '') + '</div>'
+        + '</div></div>';
+    h += '<div style="display:flex;flex-direction:column;gap:10px;">';
+    h += '<div><span class="emp-day-badge ' + badgeCls + '">' + escapeHtml(absLbl) + '</span>'
+       + ' <b style="margin-left:6px;">' + escapeHtml(formatDateHuman(dk)) + '</b></div>';
+    if (rec) {
+        var daysN = 0;
+        try {
+            var a = new Date(rec.from + 'T00:00:00');
+            var b = new Date(rec.to + 'T00:00:00');
+            daysN = Math.round((b - a) / 86400000) + 1;
+        } catch (e) {}
+        h += '<div style="font-size:0.85rem;color:var(--trk-meta);">'
+           +   'Период: <b>' + escapeHtml(formatDateHuman(rec.from)) + ' — '
+           +   escapeHtml(formatDateHuman(rec.to)) + '</b>'
+           +   (daysN > 0 ? ' · ' + daysN + ' дн.' : '') + '</div>';
+        if (rec.comment) {
+            h += '<div class="day-entry-comment" style="margin-top:2px;">' + escapeHtml(rec.comment) + '</div>';
+        }
+    } else {
+        h += '<div style="font-size:0.82rem;color:var(--trk-meta);">Запись об отсутствии не найдена — возможно, была изменена.</div>';
+    }
+    h += '</div>';
+    body.innerHTML = h;
+    m.classList.add('active');
+}
+window.__trkShowAbsenceInfo = showAbsenceInfo;
 
 function openGridCellDetails(empId, taskId, dateStr) {
     var d = state.summary; if (!d || !d.rows) return;
@@ -3563,6 +3752,8 @@ function renderSummary() {
     head += '<th class="total-col">Итого</th></tr>';
     var body = '';
     d.rows.forEach(function(r) {
+        // PATCH v1.0.12: absence_days приходит с бэкенда для каждой строки.
+        var absMap = r.absence_days || {};
         body += '<tr><td class="emp-cell">'
             + '<div class="emp-cell-inner">'
             +   '<div class="emp-cell-name">'
@@ -3573,8 +3764,17 @@ function renderSummary() {
             + '</div></td>';
         days.forEach(function(dk) {
             var cell = r.cells[dk], m = dm[dk] || {}, extra = '';
+            var abs = absMap[dk];
             if (m.is_holiday) extra = ' holiday-day';
             else if (m.is_weekend) extra = ' weekend-day';
+            // PATCH v1.0.12: отсутствие без часов — показываем цветную ячейку с иконкой.
+            if (abs && (!cell || !cell.hours)) {
+                body += '<td class="empty-cell absence-' + escapeHtml(abs) + '" '
+                    + 'data-emp="' + escapeHtml(r.employee_id) + '" data-date="' + escapeHtml(dk) + '" data-absence="' + escapeHtml(abs) + '" '
+                    + 'title="' + escapeHtml(formatDateHuman(dk) + ' · ' + absenceLabel(abs)) + '" '
+                    + 'style="cursor:pointer;">' + absenceIcon(abs) + '</td>';
+                return;
+            }
             if (!cell || !cell.hours) { body += '<td class="empty-cell' + extra + '">—</td>'; return; }
             var inner = '';
             if (view === 'full') {
@@ -3602,9 +3802,17 @@ function renderSummary() {
         totalsRow += '<td' + (cls.length ? ' class="' + cls.join(' ') + '"' : '') + '>' + (v > 0 ? formatHours(v) : '—') + '</td>';
     });
     totalsRow += '<td class="total-cell">' + formatHours(d.grand_total) + '</td></tr>';
-    wrap.innerHTML = '<table class="sum-table"><thead>' + head + '</thead><tbody>' + body + totalsRow + '</tbody></table>';
+    // PATCH v1.0.12: класс compact-view только для view='compact' — плотные строки.
+    var _tblCls = 'sum-table' + (view === 'compact' ? ' compact-view' : '');
+    wrap.innerHTML = '<table class="' + _tblCls + '"><thead>' + head + '</thead><tbody>' + body + totalsRow + '</tbody></table>';
     wrap.querySelectorAll('td.has-data').forEach(function(td) {
         td.addEventListener('click', function() { openSummaryCell(this.getAttribute('data-emp'), this.getAttribute('data-date')); });
+    });
+    // PATCH v1.0.12: клик по ячейке отсутствия в compact/full.
+    wrap.querySelectorAll('td[data-absence]').forEach(function(td) {
+        td.addEventListener('click', function() {
+            showAbsenceInfo(this.getAttribute('data-emp'), this.getAttribute('data-date'), this.getAttribute('data-absence'));
+        });
     });
     if (extras) extras.innerHTML = _summaryLegendHtml() + _summaryExtrasHtml(d);
     initSummaryResizers();
@@ -6232,97 +6440,9 @@ loadState().then(function() {
     }
 })();
 /* ============================================================
-   PATCH 10 — Должности: автозаполнение списка
+   PATCH 10 — удалён в v1.2.0: функциональность перенесена
+   в блок «PATCH v1.2.0» (конец файла).
    ============================================================ */
-(function() {
-    'use strict';
-
-    function fillRoleDatalist() {
-        var dl = document.getElementById('emp_role_list');
-        if (!dl) return;
-        var st = window.__trkState;
-        if (!st || !st.employees) return;
-        var seen = {};
-        st.employees.forEach(function(e) {
-            var r = (e.role || '').trim();
-            if (r) seen[r] = true;
-        });
-        var roles = Object.keys(seen).sort(function(a, b) {
-            return a.toLowerCase().localeCompare(b.toLowerCase());
-        });
-        dl.innerHTML = roles.map(function(r) {
-            return '<option value="' + r.replace(/"/g, '&quot;') + '"></option>';
-        }).join('');
-    }
-
-    function attachObserver() {
-        var m = document.getElementById('employeeModal');
-        if (!m || m._roleDatalistHooked) return;
-        m._roleDatalistHooked = true;
-        var obs = new MutationObserver(function() {
-            if (m.classList.contains('active')) fillRoleDatalist();
-        });
-        obs.observe(m, { attributes: true, attributeFilter: ['class'] });
-    }
-
-    // PATCH v1.1.9: гарантированно обновлять список должностей после каждой
-    // загрузки данных (state.employees меняется в loadState) — иначе после
-    // создания сотрудника с новой должностью datalist оставался устаревшим.
-    function hookReloads() {
-        if (window.__trkFillRoleDatalist) { /* noop */ }
-        ['focus', 'click'].forEach(function(ev) {
-            document.addEventListener(ev, function(e) {
-                try {
-                    var t = e.target;
-                    if (t && t.closest && (t.closest('#emp_role') || t.closest('#addEmployeeBtn'))) {
-                        fillRoleDatalist();
-                    }
-                } catch (x) {}
-            }, true);
-        });
-    }
-
-    function boot() {
-        attachObserver();
-        hookReloads();
-        setTimeout(fillRoleDatalist, 800);
-        setTimeout(fillRoleDatalist, 2000);
-    }
-
-    // PATCH v1.1.9: обновлять datalist после каждой загрузки/обновления данных
-    // (state.employees перезаписывается в loadState — обёртываем её один раз).
-    (function wrapLoadState() {
-        try {
-            if (typeof window.loadState === 'function' && !window.loadState.__roleWrap) {
-                var _orig = window.loadState;
-                var wrapped = function() {
-                    var p = _orig.apply(this, arguments);
-                    try {
-                        if (p && typeof p.then === 'function') {
-                            p.then(function() { setTimeout(fillRoleDatalist, 50); }, function(){});
-                        }
-                    } catch (x) {}
-                    return p;
-                };
-                wrapped.__roleWrap = true;
-                window.loadState = wrapped;
-            }
-        } catch (x) {}
-    })();
-
-    if (document.readyState === 'loading') {
-        document.addEventListener('DOMContentLoaded', boot);
-    } else {
-        boot();
-    }
-
-    document.addEventListener('click', function(e) {
-        if (!e.target || !e.target.closest) return;
-        if (e.target.closest('#addEmployeeBtn')) setTimeout(fillRoleDatalist, 80);
-    });
-
-    window.__trkFillRoleDatalist = fillRoleDatalist;
-})();
 /* ============================================================
    PATCH 14 — Вид «Сотрудники» v2: missing + редактирование + многострочность
    ============================================================ */
@@ -11396,7 +11516,102 @@ function _ensureDrop() {
     d.className = 'trk-bell-drop';
     d.style.display = 'none';
     document.body.appendChild(d);
+    // PATCH v1.0.38: делегирование на контейнере — обработчики переживают
+    // перерисовку innerHTML через _renderList (refresh каждые 30 сек).
+    d.addEventListener('click', function(e) {
+        if (!e.target || !e.target.closest) return;
+        var _hMarkAll = e.target.closest('#trkBellMarkAll');
+        if (_hMarkAll) { e.stopPropagation(); _bellMarkAll(); return; }
+        var _hGlobal = e.target.closest('#trkBellMarkAllGlobal');
+        if (_hGlobal) { e.stopPropagation(); _bellMarkAllGlobal(); return; }
+        var _hAct = e.target.closest('.trk-bell-act');
+        if (_hAct) {
+            e.stopPropagation(); e.preventDefault();
+            var _el = _hAct.closest('.trk-bell-item');
+            var _nid = _el ? parseInt(_el.getAttribute('data-nid'), 10) : NaN;
+            var _act = _hAct.getAttribute('data-act');
+            if (!isNaN(_nid) && (_act === 'accept' || _act === 'reject')) _bellDoAction(_nid, _act);
+            return;
+        }
+        var _hName = e.target.closest('.trk-bell-name');
+        if (_hName) {
+            var _el2 = _hName.closest('.trk-bell-item');
+            if (!_el2) return;
+            var _kind = _el2.getAttribute('data-kind');
+            var _tid = _el2.getAttribute('data-tid');
+            var _rkind = _el2.getAttribute('data-reminder-kind');
+            if (_kind === 'reminder') {
+                if (typeof window.__trkReminderGoToTask === 'function') window.__trkReminderGoToTask(_tid, _rkind);
+                else if (typeof window.__trkOpenTaskCardModal === 'function' && _tid) window.__trkOpenTaskCardModal(_tid);
+                var _dr = document.getElementById('trkBellDrop');
+                if (_dr) _dr.style.display = 'none';
+                return;
+            }
+            if (typeof window.__trkOpenTaskCardModal === 'function' && _tid) window.__trkOpenTaskCardModal(_tid);
+        }
+    });
     return d;
+}
+
+function _bellMarkAll() {
+    var _hdrs = {'Content-Type': 'application/json'};
+    if (window.REESTR_CSRF) _hdrs['X-CSRF-Token'] = window.REESTR_CSRF;
+    // PATCH v1.0.38: оптимистичный UI — сразу гасим счётчик и drop.
+    var _cnt = document.getElementById('trkBellCount');
+    var _prevCnt = _cnt ? _cnt.textContent : '';
+    if (_cnt) { _cnt.style.display = 'none'; _cnt.textContent = '0'; }
+    var _drop = document.getElementById('trkBellDrop');
+    if (_drop) _drop.innerHTML = '<div class="trk-bell-head">Уведомления</div><div class="trk-bell-empty">Нет уведомлений</div>';
+    fetch('/api/notifications/read', {
+        method: 'POST', headers: _hdrs, credentials: 'same-origin',
+        body: JSON.stringify({}),
+    }).then(function(r) {
+        if (!r || !r.ok) throw new Error('HTTP ' + (r ? r.status : '?'));
+        return r.json();
+    }).then(function(d) {
+        if (!d || !d.success) throw new Error((d && d.error) || 'Ошибка');
+        setTimeout(refresh, 60);
+    }).catch(function(err) {
+        if (_cnt) { _cnt.textContent = _prevCnt; _cnt.style.display = _prevCnt ? '' : 'none'; }
+        if (typeof notify === 'function') notify('❌ Не удалось пометить прочитанными: ' + (err && err.message || 'Ошибка'), 'error');
+    });
+}
+
+function _bellMarkAllGlobal() {
+    if (!confirm('Пометить ПРОЧИТАННЫМИ все уведомления у ВСЕХ пользователей?')) return;
+    var _hdrs = {'Content-Type': 'application/json'};
+    if (window.REESTR_CSRF) _hdrs['X-CSRF-Token'] = window.REESTR_CSRF;
+    fetch('/api/notifications/read_all', {
+        method: 'POST', headers: _hdrs, credentials: 'same-origin',
+        body: JSON.stringify({}),
+    }).then(function(r) {
+        if (!r || !r.ok) throw new Error('HTTP ' + (r ? r.status : '?'));
+        return r.json();
+    }).then(function(res) {
+        if (!res || !res.success) throw new Error((res && res.error) || 'Ошибка');
+        if (typeof notify === 'function') notify('✅ Сброшено: ' + (res.cleared || 0));
+        refresh();
+    }).catch(function(err) {
+        if (typeof notify === 'function') notify('❌ Не удалось: ' + (err && err.message || 'Ошибка'), 'error');
+    });
+}
+
+function _bellDoAction(nid, act) {
+    var _hdrs = {'Content-Type': 'application/json'};
+    if (window.REESTR_CSRF) _hdrs['X-CSRF-Token'] = window.REESTR_CSRF;
+    fetch('/api/notifications/action', {
+        method: 'POST', headers: _hdrs, credentials: 'same-origin',
+        body: JSON.stringify({ id: nid, action: act }),
+    }).then(function(r) {
+        if (!r || !r.ok) throw new Error('HTTP ' + (r ? r.status : '?'));
+        return r.json();
+    }).then(function(res) {
+        if (!res || !res.success) throw new Error((res && res.error) || 'Ошибка');
+        refresh();
+        if (typeof window.__trkLoadState === 'function') window.__trkLoadState();
+    }).catch(function(err) {
+        if (typeof notify === 'function') notify('❌ ' + (err && err.message || 'Ошибка'), 'error');
+    });
 }
 
 function _fmtTs(ts) {
@@ -11465,72 +11680,11 @@ function _renderList(items) {
     });
     d.innerHTML = h;
 
-    d.querySelectorAll('.trk-bell-item').forEach(function(el) {
-        var nid = parseInt(el.getAttribute('data-nid'), 10);
-        var tid = el.getAttribute('data-tid');
-        var kind = el.getAttribute('data-kind');
-        var remKind = el.getAttribute('data-reminder-kind');
-        var nameEl = el.querySelector('.trk-bell-name');
-        if (nameEl) nameEl.addEventListener('click', function() {
-            if (kind === 'reminder') {
-                if (typeof window.__trkReminderGoToTask === 'function') {
-                    window.__trkReminderGoToTask(tid, remKind);
-                } else if (typeof window.__trkOpenTaskCardModal === 'function' && tid) {
-                    window.__trkOpenTaskCardModal(tid);
-                }
-                var dr = document.getElementById('trkBellDrop');
-                if (dr) dr.style.display = 'none';
-                return;
-            }
-            if (typeof window.__trkOpenTaskCardModal === 'function' && tid) {
-                window.__trkOpenTaskCardModal(tid);
-            }
-        });
-        el.querySelectorAll('.trk-bell-act').forEach(function(btn) {
-            btn.addEventListener('click', function(e) {
-                e.stopPropagation();
-                e.preventDefault();
-                var act = this.getAttribute('data-act');
-                fetch('/api/notifications/action', {
-                    method: 'POST',
-                    headers: Object.assign({'Content-Type': 'application/json'}, window.REESTR_CSRF ? {'X-CSRF-Token': window.REESTR_CSRF} : {}),
-                    credentials: 'same-origin',
-                    body: JSON.stringify({ id: nid, action: act }),
-                }).then(function(r) { return r.json(); }).then(function(res) {
-                    if (res && res.success) {
-                        refresh();
-                        if (typeof window.__trkLoadState === 'function') window.__trkLoadState();
-                    }
-                }).catch(function(){});
-            });
-        });
-    });
-    var markAll = d.querySelector('#trkBellMarkAll');
-    if (markAll) markAll.addEventListener('click', function() {
-        fetch('/api/notifications/read', {
-            method: 'POST',
-            headers: Object.assign({'Content-Type': 'application/json'}, window.REESTR_CSRF ? {'X-CSRF-Token': window.REESTR_CSRF} : {}),
-            credentials: 'same-origin',
-            body: JSON.stringify({}),
-        }).then(function() { refresh(); });
-    });
-    var markAllGlobal = d.querySelector('#trkBellMarkAllGlobal');
-    if (markAllGlobal) markAllGlobal.addEventListener('click', function() {
-        if (!confirm('Пометить ПРОЧИТАННЫМИ все уведомления у ВСЕХ пользователей?')) return;
-        fetch('/api/notifications/read_all', {
-            method: 'POST',
-            headers: Object.assign({'Content-Type': 'application/json'}, window.REESTR_CSRF ? {'X-CSRF-Token': window.REESTR_CSRF} : {}),
-            credentials: 'same-origin',
-            body: JSON.stringify({}),
-        }).then(function(r) { return r.json(); }).then(function(res) {
-            if (res && res.success) {
-                if (typeof notify === 'function') notify('✅ Сброшено: ' + (res.cleared || 0));
-                refresh();
-            } else if (typeof notify === 'function') {
-                notify('❌ ' + ((res && res.error) || 'Ошибка'), 'error');
-            }
-        }).catch(function(){});
-    });
+    // PATCH v1.0.38: обработчики больше не вешаются на отдельные элементы —
+    // делегирование на #trkBellDrop (в _ensureDrop) переживает перерисовку
+    // innerHTML через refresh() каждые 30 сек и делает кнопку «Прочитать все»
+    // стабильной. Индивидуальные addEventListener убраны, чтобы не дублировать
+    // логику и не терять их при перерисовке.
 }
 
 function refresh() {
@@ -11550,11 +11704,16 @@ function refresh() {
                 read_at: '', ts: '', _reminder: it
             });
         });
+        // PATCH v1.0.38: счётчик показывает ТОЛЬКО notifications.unread.
+        // reminders (плагин reminders.py) — не «уведомления», они не гасятся
+        // кнопкой «Прочитать все» и живут до закрытия задачи. Показываем их
+        // отдельной подписью внутри drop'а, чтобы пользователь видел разницу.
         var cnt = document.getElementById('trkBellCount');
-        var total = (notif.unread || 0) + remItems.length;
+        var total = (notif.unread || 0);
         if (cnt) {
             if (total > 0) { cnt.style.display = ''; cnt.textContent = total > 99 ? '99+' : String(total); }
             else cnt.style.display = 'none';
+            cnt.title = 'Непрочитанных: ' + total + (remItems.length ? ' · напоминаний: ' + remItems.length : '');
         }
         var drop = document.getElementById('trkBellDrop');
         if (drop && drop.style.display !== 'none') {
@@ -11565,6 +11724,23 @@ function refresh() {
             var dd = document.getElementById('trkBellDrop');
             if (dd) dd.style.display = 'none';
         }
+        // PATCH v1.0.38: подпись «+N напоминаний» в шапке drop'а.
+        try {
+            var _dd2 = document.getElementById('trkBellDrop');
+            if (_dd2) {
+                var _head = _dd2.querySelector('.trk-bell-head');
+                var _oldRem = _dd2.querySelector('.trk-bell-rem-hint');
+                if (_oldRem) _oldRem.remove();
+                if (_head && remItems.length) {
+                    var _remHint = document.createElement('span');
+                    _remHint.className = 'trk-bell-rem-hint';
+                    _remHint.style.cssText = 'font-size:0.65rem;color:var(--trk-meta);margin-left:8px;font-weight:500;text-transform:none;letter-spacing:0;';
+                    _remHint.textContent = '+' + remItems.length + ' напом.';
+                    _remHint.title = 'Напоминания о задачах — не гасятся кнопкой «Прочитать все»';
+                    _head.appendChild(_remHint);
+                }
+            }
+        } catch (e) { console.error('[bell-rem-hint]', e); }
     }).catch(function(){});
 }
 
@@ -13598,6 +13774,13 @@ function _forceTagDraft(tags){
         });
     });
     window.__trkCurrentTaskTags = tags;
+    // PATCH v1.0.19: синхронизируем _tagDraft основного IIFE с window.__trkCurrentTaskTags.
+    // Раньше _forceTagDraft писал только в window.*, а saveTask читал _tagDraft —
+    // изменения тегов терялись. Мутируем, чтобы не порвать ссылку.
+    if (window.__trkTagDraft && typeof window.__trkTagDraft.length === 'number') {
+        window.__trkTagDraft.length = 0;
+        tags.forEach(function(t) { window.__trkTagDraft.push(t); });
+    }
 }
 
 function _setCheckboxGroup(containerId, ids){
@@ -13681,6 +13864,8 @@ function _renderLinks(items){
 }
 
 function _fillTaskModal(task){
+    // PATCH v1.0.20: не перезаписываем, если пользователь уже что-то ввёл.
+    if (window.__trkTaskModalUserTouched) return;
     if (!task) return;
 
     _s('task_id', task.id || '');
@@ -15415,6 +15600,8 @@ function _renderLinks(items){
 }
 
 function _populate(logId){
+    // PATCH v1.0.20: не перезаписываем, если пользователь уже что-то ввёл.
+    if (window.__trkLogModalUserTouched) return;
     var entry = _getEntryFromState(logId);
     var st = window.__trkState || {};
     var taskId = entry ? entry.task_id : '';
@@ -16152,7 +16339,7 @@ var COLS_KEY = 'tracker_tsk_cols';
 function _read(){
     try {
         var v = localStorage.getItem(KEY);
-        if (v === 'tile' || v === 'compact' || v === 'list') return v;
+        if (v === 'tile' || v === 'compact' || v === 'list' || v === 'tree') return v;
     } catch(e){}
     return 'tile';
 }
@@ -16206,7 +16393,7 @@ function _wire(){
             var b = e.target.closest('button[data-view]');
             if (!b) return;
             var v = b.getAttribute('data-view');
-            if (v !== 'tile' && v !== 'compact' && v !== 'list') v = 'tile';
+            if (v !== 'tile' && v !== 'compact' && v !== 'list' && v !== 'tree') v = 'tile';
             _write(v);
             _apply();
         });
@@ -17206,7 +17393,11 @@ function _onSuccess(body, d){
                 var cur = Array.isArray(task.assignees) ? task.assignees.slice() : [];
                 if (cur.indexOf(body.employee_id) === -1) {
                     cur.push(body.employee_id);
-                    var payload = { id: task.id, name: task.name || '', icon: task.icon || '📋', description: task.description || '', status: task.status || 'active', start_date: task.start_date || '', deadline: task.deadline || '', completed_at: task.completed_at || '', folder: task.folder || '', order_ref: task.order_ref || '', tags: (task.tags || []).slice(), assignees: cur, department_ids: (task.department_ids || []).slice(), is_urgent: !!task.is_urgent, links: (task.links || []).slice(), orders: (task.orders || []).slice() };
+                    // PATCH v1.0.16: partial update — только assignees.
+                    // Раньше уходил полный payload, и если в state.tasks не было
+                    // hypotheses/links/orders/folder (например, задача только что
+                    // создана в другой вкладке), сервер затирал их пустыми значениями.
+                    var payload = { id: task.id, assignees: cur, partial: ['assignees'] };
                     var hdrs = {'Content-Type': 'application/json'};
                     if (_csrf()) hdrs['X-CSRF-Token'] = _csrf();
                     _native('/api/tracker/task/save', { method: 'POST', headers: hdrs, credentials: 'same-origin', body: JSON.stringify(payload) }).catch(function(){});
@@ -19033,7 +19224,7 @@ function _applyLayout(){
 
     // 4. Приказы (физически оборачиваем существующий блок)
     var gOrd = _findGroup($('logOrdersList'));
-    if (gOrd && !gOrd.querySelector('details')) {
+    if (gOrd && !gOrd.closest('details.log-section')) {
         var d = document.createElement('details');
         d.className = 'log-section';
         d.innerHTML = '<summary>📄 Приказы / распоряжения <span class="cnt"></span></summary><div class="log-section-body"></div>';
@@ -19048,7 +19239,7 @@ function _applyLayout(){
 
     // 5. Ссылки
     var gLnk = _findGroup($('logLinksList'));
-    if (gLnk && !gLnk.querySelector('details')) {
+    if (gLnk && !gLnk.closest('details.log-section')) {
         var d2 = document.createElement('details');
         d2.className = 'log-section';
         d2.innerHTML = '<summary>🔗 Ссылки <span class="cnt"></span></summary><div class="log-section-body"></div>';
@@ -19138,4 +19329,2315 @@ setInterval(function(){
     var p = document.getElementById('panel-tasks');
     if (p && p.classList.contains('active')) hide();
 }, 2000);
+})();
+
+
+/* ============================================================
+   PATCH v1.1.2 — управление z-index и попапами
+   ============================================================ */
+(function(){
+    if (window.__trkModalsV112) return;
+    window.__trkModalsV112 = true;
+
+    /* 1. Управление Z-INDEX модалок (каждая новая открывается ПОВЕРХ предыдущей) */
+    var modalObserver = new MutationObserver(function(mutations) {
+        mutations.forEach(function(m) {
+            if (m.type === 'attributes' && m.attributeName === 'class') {
+                var el = m.target;
+                if (el.classList.contains('modal') && el.classList.contains('active')) {
+                    var maxZ = 3000;
+                    document.querySelectorAll('.modal.active').forEach(function(m2) {
+                        if (m2 !== el) {
+                            var z = parseInt(window.getComputedStyle(m2).zIndex) || 0;
+                            if (z > maxZ) maxZ = z;
+                        }
+                    });
+                    // Ставим модалку поверх всех остальных
+                    el.style.setProperty('z-index', maxZ + 10, 'important');
+                }
+            }
+        });
+    });
+
+    document.querySelectorAll('.modal').forEach(function(m) {
+        modalObserver.observe(m, { attributes: true, attributeFilter: ['class'] });
+    });
+
+    /* 2. Вынос попапа ответственных из обрезающего контейнера */
+    document.addEventListener('click', function(e) {
+        var btn = e.target.closest('[data-act="hyp-asg"], [data-act="job-asg"]');
+        if (!btn) return;
+        
+        setTimeout(function() {
+            var pop = document.querySelector('.hyp-asg-pop');
+            if (!pop) return;
+            if (pop.parentNode === document.body) return; // уже вынесли
+            
+            var rect = btn.getBoundingClientRect();
+            
+            // Переносим прямо в <body>, чтобы никакой скролл его не обрезал
+            document.body.appendChild(pop);
+            
+            // Позиционируем ровно под кнопкой
+            pop.style.position = 'fixed';
+            pop.style.top = (rect.bottom + 5) + 'px';
+            pop.style.left = rect.left + 'px';
+            pop.style.margin = '0';
+            pop.style.zIndex = '99999';
+        }, 10);
+    }, true);
+
+    /* 3. Закрытие попапа при клике в пустоту */
+    document.addEventListener('mousedown', function(e) {
+        var pop = document.querySelector('.hyp-asg-pop');
+        if (!pop) return;
+        if (e.target.closest('.hyp-asg-pop') || e.target.closest('[data-act="hyp-asg"]') || e.target.closest('[data-act="job-asg"]')) return;
+        pop.remove();
+    });
+
+    /* 4. Клик в Своде по задаче -> карточка задачи */
+    document.addEventListener('click', function(e) {
+        var td = e.target.closest('#sumWrap td.day-cell');
+        if (!td) return;
+        var taskId = td.getAttribute('data-task');
+        var empId = td.getAttribute('data-emp');
+        var dateStr = td.getAttribute('data-date');
+        
+        if (!taskId && empId && td.hasAttribute('data-absence')) {
+            e.preventDefault(); e.stopImmediatePropagation();
+            // PATCH v1.0.14: __trkOpenEmpDayModal нигде не экспортируется —
+            // клик в grid молча проглатывался. Теперь вызываем showAbsenceInfo
+            // (экспортируется как __trkShowAbsenceInfo из v1.0.12).
+            if (typeof window.__trkShowAbsenceInfo === 'function') {
+                window.__trkShowAbsenceInfo(empId, dateStr, td.getAttribute('data-absence'));
+                return;
+            }
+            if (typeof window.__trkOpenEmpDayModal === 'function') {
+                window.__trkOpenEmpDayModal(empId, dateStr);
+            }
+            return;
+        }
+        if (taskId && taskId !== '__collapsed__') {
+            e.preventDefault(); e.stopImmediatePropagation();
+            if (typeof window.__trkOpenTaskCardModal === 'function') window.__trkOpenTaskCardModal(taskId);
+        }
+    }, true);
+
+    /* 5. Возврат гипотез в grid */
+    function fixHyp() {
+        var tm = document.getElementById('taskModal');
+        if (!tm || !tm.classList.contains('active')) return;
+        var hg = document.getElementById('hypTreeGroup');
+        var grid = tm.querySelector('.task-modal-grid');
+        if (hg && grid) {
+            if (hg.parentNode !== grid) grid.appendChild(hg);
+            hg.hidden = false;
+            hg.style.display = 'block';
+            hg.classList.add('trk-hyp-fullwidth');
+        }
+    }
+    var tm = document.getElementById('taskModal');
+    if (tm && !tm._hypV112Obs) {
+        tm._hypV112Obs = true;
+        new MutationObserver(function(){
+            if (tm.classList.contains('active')) {
+                setTimeout(fixHyp, 50);
+                setTimeout(fixHyp, 250);
+                setTimeout(fixHyp, 600);
+            }
+        }).observe(tm, { attributes: true, attributeFilter: ['class'] });
+    }
+})();
+
+
+/* ============================================================
+   PATCH v1.2.0 — Карточка «Сотрудник»:
+   1) выпадающий список «Должность» из уже заполненных данных
+      (серверный справочник /api/tracker/roles + state.employees);
+   2) гарантированно фиксированные заголовок и футер
+      («💾 Сохранить» / «Закрыть») — скроллится только тело модалки.
+   ============================================================ */
+(function() {
+    'use strict';
+    if (window.__trkEmpCardV120) return;
+    window.__trkEmpCardV120 = true;
+
+    function esc(s) {
+        return String(s == null ? '' : s)
+            .replace(/&/g, '&amp;').replace(/</g, '&lt;')
+            .replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+    }
+
+    /* ---------- 1. Справочник должностей ---------- */
+    var _rolesCache = [];
+    var _rolesLoadedAt = 0;
+
+    function collectLocalRoles() {
+        var out = {};
+        var sts = [window.state, window.__trkState];
+        for (var i = 0; i < sts.length; i++) {
+            var st = sts[i];
+            if (!st || !Array.isArray(st.employees)) continue;
+            st.employees.forEach(function(e) {
+                var r = ((e && e.role) || '').trim();
+                if (r) out[r] = true;
+            });
+        }
+        return Object.keys(out).sort(function(a, b) {
+            return a.toLowerCase().localeCompare(b.toLowerCase(), 'ru');
+        });
+    }
+
+    function allRoles() {
+        var seen = {}, res = [];
+        _rolesCache.concat(collectLocalRoles()).forEach(function(r) {
+            r = String(r || '').trim();
+            if (r && !seen[r.toLowerCase()]) { seen[r.toLowerCase()] = 1; res.push(r); }
+        });
+        return res.sort(function(a, b) {
+            return a.toLowerCase().localeCompare(b.toLowerCase(), 'ru');
+        });
+    }
+
+    function loadRoles(force) {
+        var now = Date.now();
+        if (!force && (_rolesLoadedAt === 0 && _rolesCache.length)) return;
+        if (!force && (now - _rolesLoadedAt) < 15000) return;
+        _rolesLoadedAt = now;
+        try {
+            apiJson('/api/tracker/roles', { method: 'GET' })
+                .then(function(d) {
+                    if (d && d.success && Array.isArray(d.roles)) _rolesCache = d.roles;
+                    renderRoleOptions();
+                })
+                .catch(function() {});
+        } catch (e) {}
+    }
+
+    function renderRoleOptions() {
+        var sel = document.getElementById('emp_role_select');
+        var inp = document.getElementById('emp_role');
+        var dl = document.getElementById('emp_role_list');
+        var cur = inp ? inp.value.trim() : '';
+        var roles = allRoles();
+
+        if (dl) {
+            dl.innerHTML = roles.map(function(r) {
+                return '<option value="' + esc(r) + '"></option>';
+            }).join('');
+        }
+        if (!sel) return;
+        var html = '<option value="">— выберите должность —</option>';
+        if (cur && roles.indexOf(cur) === -1) {
+            html += '<option value="' + esc(cur) + '" selected>' + esc(cur)
+                  + ' (текущая)</option>';
+        }
+        roles.forEach(function(r) {
+            html += '<option value="' + esc(r) + '"'
+                  + ((r === cur && !(cur && roles.indexOf(cur) === -1)) ? ' selected' : '')
+                  + '>' + esc(r) + '</option>';
+        });
+        sel.innerHTML = html;
+        if (cur && roles.indexOf(cur) !== -1) sel.value = cur;
+    }
+
+    /* ---------- 2. Фиксация заголовка и футера ---------- */
+    function fixLayout() {
+        var modal = document.getElementById('employeeModal');
+        if (!modal) return;
+        var content = modal.querySelector('.modal-content');
+        if (!content) return;
+        var header = document.getElementById('employeeModalHeader');
+        var footer = content.querySelector('.modal-actions');
+        if (!footer) return;
+        if (!header) {
+            var h2 = content.querySelector('h2');
+            if (h2) {
+                header = document.createElement('div');
+                header.className = 'emp-modal-header';
+                header.id = 'employeeModalHeader';
+                h2.parentNode.insertBefore(header, h2);
+                header.appendChild(h2);
+            }
+        }
+        if (!content.querySelector('.emp-modal-body')) {
+            var body = document.createElement('div');
+            body.className = 'emp-modal-body';
+            while (content.firstElementChild
+                   && content.firstElementChild !== header
+                   && content.firstElementChild !== footer) {
+                body.appendChild(content.firstElementChild);
+            }
+            content.insertBefore(body, footer);
+        }
+        content.classList.add('emp-modal-fixed');
+        content.style.setProperty('display', 'flex', 'important');
+        content.style.setProperty('flex-direction', 'column', 'important');
+        content.style.setProperty('overflow', 'hidden', 'important');
+        content.style.setProperty('max-height', 'min(88vh, 860px)', 'important');
+        content.style.setProperty('padding', '0', 'important');
+        if (header) {
+            header.style.setProperty('position', 'sticky', 'important');
+            header.style.setProperty('top', '0', 'important');
+            header.style.setProperty('z-index', '5', 'important');
+            header.style.setProperty('background', 'var(--trk-modal-bg, #141414)', 'important');
+        }
+        var bodyEl = content.querySelector('.emp-modal-body');
+        if (bodyEl) {
+            bodyEl.style.setProperty('flex', '1 1 auto', 'important');
+            bodyEl.style.setProperty('overflow-y', 'auto', 'important');
+            bodyEl.style.setProperty('min-height', '0', 'important');
+            bodyEl.style.setProperty('padding', '14px 26px 6px', 'important');
+        }
+        footer.classList.add('emp-modal-footer');
+        footer.style.setProperty('position', 'sticky', 'important');
+        footer.style.setProperty('bottom', '0', 'important');
+        footer.style.setProperty('z-index', '5', 'important');
+        footer.style.setProperty('background', 'var(--trk-modal-bg, #141414)', 'important');
+        footer.style.setProperty('margin', '0', 'important');
+    }
+
+    function ensureSubtitle() {
+        var header = document.getElementById('employeeModalHeader');
+        if (!header) return;
+        if (document.getElementById('employeeModalSubtitle')) return;
+        var sub = document.createElement('div');
+        sub.id = 'employeeModalSubtitle';
+        sub.style.cssText = 'font-size:.8rem;color:var(--trk-meta,#9aa);margin-top:2px;';
+        header.appendChild(sub);
+    }
+
+    /* ---------- 3. Обвязка событий ---------- */
+    function onOpen() {
+        renderRoleOptions();
+        loadRoles(false);
+    }
+
+    function boot() {
+        var modal = document.getElementById('employeeModal');
+        if (!modal) return;
+
+        var mo = new MutationObserver(function(muts) {
+            muts.forEach(function(m) {
+                if (m.type === 'attributes' && m.attributeName === 'class') {
+                    if (modal.classList.contains('active')) {
+                        fixLayout();
+                        ensureSubtitle();
+                        onOpen();
+                    }
+                }
+            });
+        });
+        mo.observe(modal, { attributes: true, attributeFilter: ['class'] });
+
+        if (modal.classList.contains('active')) { fixLayout(); ensureSubtitle(); onOpen(); }
+
+        var sel = document.getElementById('emp_role_select');
+        var inp = document.getElementById('emp_role');
+        if (sel && inp) {
+            sel.addEventListener('change', function() {
+                if (sel.value) {
+                    inp.value = sel.value;
+                } else {
+                    inp.focus();
+                    renderRoleOptions();
+                }
+            });
+        }
+        if (inp) {
+            inp.addEventListener('focus', function() { loadRoles(true); renderRoleOptions(); });
+            inp.addEventListener('input', function() {
+                if (sel) {
+                    var v = inp.value.trim();
+                    var has = Array.prototype.some.call(sel.options, function(o) { return o.value === v; });
+                    if (has) sel.value = v;
+                }
+            });
+        }
+
+        // обновляем варианты после любой загрузки состояния
+        try {
+            if (typeof window.loadState === 'function' && !window.loadState.__roleWrapV120) {
+                var _orig = window.loadState;
+                var wrapped = function() {
+                    var p = _orig.apply(this, arguments);
+                    try {
+                        if (p && typeof p.then === 'function') {
+                            p.then(function() {
+                                setTimeout(renderRoleOptions, 50);
+                            }, function() {});
+                        }
+                    } catch (x) {}
+                    return p;
+                };
+                wrapped.__roleWrapV120 = true;
+                window.loadState = wrapped;
+            }
+        } catch (x) {}
+    }
+
+    if (document.readyState === 'loading') {
+        document.addEventListener('DOMContentLoaded', boot);
+    } else {
+        boot();
+    }
+
+    window.__trkRolesV120 = {
+        reload: function() { loadRoles(true); renderRoleOptions(); },
+        render: renderRoleOptions,
+        fixLayout: fixLayout,
+    };
+})();
+
+// ============================================================
+// PATCH v1.4.3 (final): «Проверка → Гипотезы → Задания».
+// Консолидирует v1.3.2 + v1.3.3 + v1.3.4…v1.4.3 в один блок.
+// Плоский черновик window.__trkHypDraft конвертируется в дерево
+// в saveTask. UI — native <details>, кнопки статусов без inline
+// onclick (capture-phase delegation), спойлер ответственных,
+// имена ответственных в свёрнутой шапке, статус по умолчанию
+// «В работе».
+// ============================================================
+(function() {
+    var DRAFT_KEY = '__trkHypDraft';
+    function draft() {
+        if (!Array.isArray(window[DRAFT_KEY])) window[DRAFT_KEY] = [];
+        return window[DRAFT_KEY];
+    }
+    function setDraft(a) { window[DRAFT_KEY] = a; }
+    function uid(p) {
+        return p + Date.now().toString(36) + Math.random().toString(36).slice(2, 8);
+    }
+    function esc(s) {
+        return String(s == null ? '' : s)
+            .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+            .replace(/"/g, '&quot;').replace(/'/g, '&#39;');
+    }
+    function findItem(id) {
+        var a = draft();
+        for (var i = 0; i < a.length; i++) if (a[i].id === id) return a[i];
+        return null;
+    }
+    function updField(id, key, val) {
+        var it = findItem(id);
+        if (it) it[key] = val;
+    }
+    function removeNode(id) {
+        var a = draft();
+        var kids = {};
+        kids[id] = true;
+        var changed = true;
+        while (changed) {
+            changed = false;
+            for (var i = 0; i < a.length; i++) {
+                if (kids[a[i].id]) continue;
+                if (a[i].parent && kids[a[i].parent]) { kids[a[i].id] = true; changed = true; }
+            }
+        }
+        setDraft(a.filter(function(x) { return !kids[x.id]; }));
+        renumber();
+        renderHypTree();
+    }
+    function renumber() {
+        var a = draft(), n = 0;
+        for (var i = 0; i < a.length; i++) if (a[i].kind === 'hypothesis') a[i].no = ++n;
+    }
+    function addHypothesis() {
+        var a = draft().slice();
+        a.push({ id: uid('h'), kind: 'hypothesis', parent: '', no: a.length + 1,
+                 title: '', description: '', date_from: '', date_to: '',
+                 status: 'in_progress', assignees: [] });
+        setDraft(a); renumber(); renderHypTree();
+    }
+    function addTask(hypId) {
+        var a = draft().slice();
+        var pos = -1;
+        for (var i = 0; i < a.length; i++) if (a[i].id === hypId) { pos = i; break; }
+        if (pos === -1) return;
+        var j = pos + 1;
+        while (j < a.length && a[j].kind === 'task' && a[j].parent === hypId) j++;
+        a.splice(j, 0, { id: uid('t'), kind: 'task', parent: hypId, no: 0,
+                         title: '', description: '', date_from: '', date_to: '',
+                         status: 'in_progress', assignees: [] });
+        setDraft(a); renumber(); renderHypTree();
+    }
+
+    function _getAsgNames(asg) {
+        if (!asg || !asg.length) return '';
+        var st = window.__trkState || {};
+        var emps = st.employees || [];
+        var names = asg.map(function(id) {
+            var e = null;
+            for (var i = 0; i < emps.length; i++) if (emps[i].id === id) { e = emps[i]; break; }
+            if (!e) return id;
+            var parts = String(e.name || '').split(/\s+/);
+            return parts[0] + (parts[1] ? ' ' + parts[1][0] + '.' : '');
+        });
+        var disp = names.slice(0, 2).join(', ');
+        if (names.length > 2) disp += ' +' + (names.length - 2);
+        var full = [];
+        for (var k = 0; k < asg.length; k++) {
+            var f = null;
+            for (var m = 0; m < emps.length; m++) if (emps[m].id === asg[k]) { f = emps[m]; break; }
+            full.push(f ? f.name : asg[k]);
+        }
+        return '<span class="hyp-asg-preview" title="' + esc(full.join(', ')) + '">👤 ' + esc(disp) + '</span>';
+    }
+
+    function peopleHtml(item) {
+        var st = window.__trkState || {};
+        var emps = st.employees || [];
+        if (!emps.length) return '<div class="hyp-empty" style="padding:10px;">Список сотрудников пуст — добавьте сотрудников и обновите страницу</div>';
+        var sel = item.assignees || [];
+        var html = '<div class="hyp-people-list">';
+        for (var i = 0; i < emps.length; i++) {
+            var e = emps[i];
+            var on = sel.indexOf(String(e.id)) !== -1 || sel.indexOf(e.id) !== -1;
+            html += '<label class="hyp-person"><input type="checkbox" value="' + esc(e.id) + '"' + (on ? ' checked' : '') + '>'
+                  + '<span class="hyp-dot" style="background:' + esc(e.color || '#888') + '"></span>'
+                  + '<span>' + esc(e.name || '') + (e.fired ? ' 🚪' : '') + '</span></label>';
+        }
+        html += '</div>';
+        return html;
+    }
+
+    function _statusIcon(st) {
+        return st === 'done' ? '✅' : (st === 'failed' ? '❌' : (st === 'in_progress' ? '🔄' : '⏳'));
+    }
+
+    function _progressNotesHtml(item) {
+        // PATCH v1.5.1: список отметок о ходе работы для гипотезы/задания
+        var taskIdEl = document.getElementById('task_id');
+        var taskId = taskIdEl ? taskIdEl.value : '';
+        if (!taskId || !item || !item.id) return '';
+        var st = window.__trkState || {};
+        var logs = (st.log || []).filter(function(l){
+            return l && l.task_id === taskId && l.hyp_item_id === item.id;
+        });
+        if (!logs.length) {
+            return '<details class="hyp-progress-details"><summary class="hyp-progress-label">📝 Отметки о ходе работы <span class="hyp-progress-count">0</span></summary><div class="hyp-progress-empty">Пока нет отметок по этой гипотезе/заданию</div></details>';
+        }
+        logs.sort(function(a, b){ return String(b.date || '').localeCompare(String(a.date || '')); });
+        var emps = st.employees || [];
+        function _einit(name){
+            var p = String(name || '').trim().split(/\\s+/);
+            if (!p.length) return '?';
+            if (p.length === 1) return p[0].slice(0, 2).toUpperCase();
+            return ((p[0][0] || '') + (p[1][0] || '')).toUpperCase();
+        }
+        function _stIcon(s){
+            return s === 'done' ? '✅' : (s === 'in_progress' ? '🔵' : (s === 'blocked' ? '🔴' : '📝'));
+        }
+        var html = '<div class="hyp-progress-list">';
+        logs.forEach(function(l){
+            var e = null;
+            for (var i = 0; i < emps.length; i++) if (emps[i].id === l.employee_id) { e = emps[i]; break; }
+            var empName = e ? (e.name || l.employee_id) : l.employee_id;
+            var color = e ? (e.color || '#888') : '#888';
+            html += '<div class="hyp-progress-item" data-log-id="' + esc(String(l.id || '')) + '">'
+                 +   '<span class="hyp-progress-avatar" style="background:' + esc(color) + ';">' + esc(_einit(empName)) + '</span>'
+                 +   '<div class="hyp-progress-body">'
+                 +     '<div class="hyp-progress-line1">'
+                 +       '<b>' + esc(empName) + '</b>'
+                 +       '<span class="hyp-progress-date">' + esc(l.date || '') + '</span>'
+                 +       '<span class="hyp-progress-st">' + _stIcon(l.status) + ' ' + esc(String(l.hours || 0)) + ' ч</span>'
+                 +     '</div>'
+                 +     (l.comment ? '<div class="hyp-progress-comment">' + esc(l.comment) + '</div>' : '')
+                 +   '</div></div>';
+        });
+        html += '</div>';
+        return '<details class="hyp-progress-details"><summary class="hyp-progress-label">📝 Отметки о ходе работы <span class="hyp-progress-count">' + logs.length + '</span></summary>' + html + '</details>';
+    }
+    function fieldsHtml(item, isTask) {
+        var _isOverdue = false;
+        if (item.date_to && item.status !== 'done') {
+            var _today = (window.__trkState && window.__trkState.today) || '';
+            if (_today && item.date_to < _today) _isOverdue = true;
+        }
+        var _cardCls = 'hyp-fields' + (_isOverdue ? ' hyp-overdue' : '');
+        var _asgCnt = (item.assignees && item.assignees.length) || 0;
+        return '<div class="' + _cardCls + '">'
+            + '<div class="hyp-row"><input type="text" class="hyp-fld hyp-title-input" data-k="title" maxlength="200" placeholder="' + (isTask ? 'Название задания *' : 'Название гипотезы *') + '" value="' + esc(item.title) + '"></div>'
+            + '<div class="hyp-row"><textarea class="hyp-fld hyp-desc-input" data-k="description" rows="2" maxlength="4000" placeholder="Описание">' + esc(item.description) + '</textarea></div>'
+            + '<div class="hyp-meta-row">'
+            +   '<div class="hyp-dates">'
+            +     '<label>С <input type="date" class="hyp-fld" data-k="date_from" value="' + esc(item.date_from) + '"></label>'
+            +     '<label>По <input type="date" class="hyp-fld" data-k="date_to" value="' + esc(item.date_to) + '"></label>'
+            +   '</div>'
+            +   '<div class="hyp-st-group">'
+            +     '<button type="button" class="hyp-st-btn planned ' + (item.status === 'planned' ? 'active' : '') + '" data-st="planned" title="Планируется">⏳</button>'
+            +     '<button type="button" class="hyp-st-btn in_progress ' + (item.status === 'in_progress' ? 'active' : '') + '" data-st="in_progress" title="В работе">🔄</button>'
+            +     '<button type="button" class="hyp-st-btn done ' + (item.status === 'done' ? 'active' : '') + '" data-st="done" title="Выполнено">✅</button>'
+            +     '<button type="button" class="hyp-st-btn failed ' + (item.status === 'failed' ? 'active' : '') + '" data-st="failed" title="Не подтверждено">❌</button>'
+            +   '</div>'
+            + '</div>'
+            + '<details class="hyp-people-details"><summary class="hyp-people-label">👥 Ответственные <span class="hyp-people-count">' + _asgCnt + '</span></summary>' + peopleHtml(item) + '</details>'
+            + _progressNotesHtml(item)
+            + '</div>';
+    }
+
+    function renderHypTree() {
+        var root = document.getElementById('hypTreeRoot');
+        var badge = document.getElementById('hypCountBadge');
+        if (badge) {
+            var hn = draft().filter(function(x) { return x.kind === 'hypothesis'; }).length;
+            var tn = draft().filter(function(x) { return x.kind === 'task'; }).length;
+            badge.textContent = hn + ' гип., ' + tn + ' зад.';
+        }
+        if (!root) return;
+        var a = draft();
+        if (!a.filter(function(x) { return x.kind === 'hypothesis'; }).length) {
+            root.innerHTML = '<div class="hyp-empty">Гипотез пока нет — нажмите «➕ Добавить гипотезу».</div>';
+            return;
+        }
+        var openState = {};
+        root.querySelectorAll('details[data-id]').forEach(function(el) {
+            openState[el.getAttribute('data-id')] = el.hasAttribute('open');
+        });
+        var html = '';
+        var hyps = a.filter(function(x) { return x.kind === 'hypothesis'; });
+        for (var i = 0; i < hyps.length; i++) {
+            var h = hyps[i];
+            var kids = a.filter(function(x) { return x.kind === 'task' && x.parent === h.id; });
+            var doneCnt = kids.filter(function(x) { return x.status === 'done'; }).length;
+            var isHOpen = openState[h.id] !== false;
+            html += '<details class="hyp-card" data-id="' + esc(h.id) + '"' + (isHOpen ? ' open' : '') + '>'
+                + '<summary class="hyp-head">'
+                +   '<div class="hyp-head-left">'
+                +     '<span class="hyp-num">🧪 Гипотеза ' + (h.no || (i + 1)) + '</span>'
+                +     '<span class="hyp-title-preview">' + esc(h.title || 'Без названия') + '</span>'
+                +     _getAsgNames(h.assignees)
+                +   '</div>'
+                +   '<div class="hyp-head-right">'
+                +     '<span class="hyp-progress">Задания: ' + doneCnt + '/' + kids.length + '</span>'
+                +     '<button type="button" class="btn btn-secondary hyp-add-task">➕ Задание</button>'
+                +     '<button type="button" class="hyp-del-btn" title="Удалить гипотезу">✕</button>'
+                +   '</div>'
+                + '</summary>'
+                + '<div class="hyp-body">' + fieldsHtml(h, false)
+                + '<div class="hyp-tasks-list">'
+                + kids.map(function(t, ti) {
+                    var isTOpen = openState[t.id] !== false;
+                    return '<details class="hyp-task-block" data-id="' + esc(t.id) + '"' + (isTOpen ? ' open' : '') + '>'
+                        + '<summary class="hyp-task-head">'
+                        +   '<div class="hyp-task-head-left">'
+                        +     '<span class="hyp-task-num">📌 Задание ' + (ti + 1) + '</span>'
+                        +     '<span class="hyp-task-title" id="task-title-prev-' + esc(t.id) + '">' + esc(t.title || 'Без названия') + '</span>'
+                        +     '<span class="hyp-task-status-icon">' + _statusIcon(t.status) + '</span>'
+                        +     _getAsgNames(t.assignees)
+                        +   '</div>'
+                        +   '<button type="button" class="hyp-del-btn" title="Удалить задание">✕</button>'
+                        + '</summary>'
+                        + fieldsHtml(t, true) + '</details>';
+                }).join('')
+                + '</div>'
+                + '</div></details>';
+        }
+        root.innerHTML = html;
+    }
+    window.renderHypTree = renderHypTree;
+    window.__renderHypTree = renderHypTree;
+
+    document.addEventListener('click', function(ev) {
+        var t = ev.target;
+        if (!t || !t.closest) return;
+        var stBtn = t.closest('.hyp-st-btn');
+        if (stBtn) {
+            ev.preventDefault(); ev.stopPropagation();
+            var holder = stBtn.closest('[data-id]');
+            if (!holder) return;
+            var itemId = holder.getAttribute('data-id');
+            var newSt = stBtn.getAttribute('data-st');
+            var it = findItem(itemId);
+            if (it) it.status = newSt;
+            renderHypTree();
+            var tidEl = document.getElementById('task_id');
+            var taskId = tidEl ? tidEl.value : '';
+            if (taskId) {
+                var hdrs = {'Content-Type': 'application/json'};
+                if (window.REESTR_CSRF) hdrs['X-CSRF-Token'] = window.REESTR_CSRF;
+                fetch('/api/tracker/hypothesis/status', {
+                    method: 'POST', headers: hdrs, credentials: 'same-origin',
+                    body: JSON.stringify({ task_id: taskId, item_id: itemId, status: newSt })
+                }).then(function(r){ return r.json(); }).then(function(d){
+                    if (d && d.success) {
+                        var _st = window.__trkState;
+                        if (_st && _st.tasks) {
+                            var _t = _st.tasks.find(function(x){ return x.id === taskId; });
+                            if (_t && Array.isArray(_t.hypotheses)) {
+                                var _h = _t.hypotheses.find(function(x){ return x.id === itemId; });
+                                if (_h) _h.status = newSt;
+                            }
+                        }
+                    }
+                }).catch(function(err){ console.warn('Status update failed', err); });
+            }
+            return;
+        }
+        var del = t.closest('.hyp-del-btn');
+        if (del) {
+            ev.preventDefault(); ev.stopPropagation();
+            var blk = del.closest('.hyp-task-block');
+            var card = del.closest('.hyp-card');
+            if (blk) removeNode(blk.getAttribute('data-id'));
+            else if (card) removeNode(card.getAttribute('data-id'));
+            return;
+        }
+        var addT = t.closest('.hyp-add-task');
+        if (addT) {
+            ev.preventDefault(); ev.stopPropagation();
+            var c = addT.closest('.hyp-card');
+            if (c) addTask(c.getAttribute('data-id'));
+            return;
+        }
+        var addH = t.closest('#hypAddBtn');
+        if (addH) { ev.preventDefault(); addHypothesis(); return; }
+        if (t.tagName === 'BUTTON' && t.closest('summary.hyp-head, summary.hyp-task-head')) {
+            ev.preventDefault();
+        }
+    }, true);
+
+    document.addEventListener('change', function(ev) {
+        var t = ev.target;
+        if (!t || !t.classList) return;
+        if (t.classList.contains('hyp-fld')) {
+            var holder = t.closest('[data-id]');
+            if (!holder) return;
+            var _id = holder.getAttribute('data-id');
+            var _k = t.getAttribute('data-k');
+            updField(_id, _k, t.value);
+            if (_k === 'title') {
+                var _card = t.closest('.hyp-card');
+                var _task = t.closest('.hyp-task-block');
+                if (_task) {
+                    var _prev = document.getElementById('task-title-prev-' + _id);
+                    if (_prev) _prev.textContent = t.value || 'Без названия';
+                } else if (_card) {
+                    var _pv = _card.querySelector('.hyp-title-preview');
+                    if (_pv) _pv.textContent = t.value || 'Без названия';
+                }
+            }
+        }
+        if (t.type === 'checkbox' && t.closest('.hyp-people-list')) {
+            var holder2 = t.closest('[data-id]');
+            if (!holder2) return;
+            var it = findItem(holder2.getAttribute('data-id'));
+            if (!it) return;
+            var box = t.closest('.hyp-people-list');
+            var picked = [];
+            box.querySelectorAll('input[type="checkbox"]:checked').forEach(function(cb) { picked.push(cb.value); });
+            it.assignees = picked;
+            var details = t.closest('.hyp-people-details');
+            if (details) {
+                var cntEl = details.querySelector('.hyp-people-count');
+                if (cntEl) cntEl.textContent = picked.length;
+            }
+        }
+    });
+
+    document.addEventListener('input', function(ev) {
+        var t = ev.target;
+        if (t && t.classList && t.classList.contains('hyp-fld')) {
+            var holder = t.closest('[data-id]');
+            if (holder) updField(holder.getAttribute('data-id'), t.getAttribute('data-k'), t.value);
+        }
+    });
+
+    try {
+        var oldScreen = document.getElementById('hypEditorScreen');
+        if (oldScreen && oldScreen.parentNode) oldScreen.parentNode.removeChild(oldScreen);
+        var oldStyle = document.getElementById('hyp-editor-style');
+        if (oldStyle) oldStyle.remove();
+    } catch (e) {}
+
+    var _btn = document.getElementById('hypAddBtn');
+    if (_btn) _btn.addEventListener('click', function(e) { e.preventDefault(); addHypothesis(); });
+})();
+
+
+/* ============================================================
+   PATCH v1.4.5 — бейдж прогресса гипотез на плитке задачи.
+   Добавляем через MutationObserver, а не через замену taskCardRowGrid:
+   так неважно, был ли применён v1.4.4 или откачен, и какие ещё патчи
+   трогали карточку задачи.
+   ============================================================ */
+(function(){
+    'use strict';
+    if (window.__trkHypBadgeV145) return;
+    window.__trkHypBadgeV145 = true;
+
+    function _computeBadge(t) {
+        if (!t || !Array.isArray(t.hypotheses) || !t.hypotheses.length) return null;
+        var hyps = t.hypotheses.filter(function(x){ return x && x.kind === 'hypothesis'; });
+        var tasks = t.hypotheses.filter(function(x){ return x && x.kind === 'task'; });
+        if (!hyps.length && !tasks.length) return null;
+        var hd = hyps.filter(function(x){ return x.status === 'done'; }).length;
+        var td = tasks.filter(function(x){ return x.status === 'done'; }).length;
+        var parts = [];
+        if (hyps.length) parts.push('🧪 ' + hd + '/' + hyps.length);
+        if (tasks.length) parts.push('📌 ' + td + '/' + tasks.length);
+        var allDone = (hd === hyps.length && td === tasks.length);
+        var anyDone = (hd > 0 || td > 0);
+        var cls = allDone ? 'hyp-badge-done' : (anyDone ? 'hyp-badge-progress' : 'hyp-badge-new');
+        return {
+            text: parts.join(' · '),
+            cls: cls,
+            title: 'Гипотезы: ' + hd + '/' + hyps.length + ' · Задания: ' + td + '/' + tasks.length
+        };
+    }
+
+    function _apply() {
+        var list = document.getElementById('tasksFullList');
+        if (!list) return;
+        var st = window.__trkState || {};
+        var byId = {};
+        (st.tasks || []).forEach(function(t){ if (t && t.id) byId[t.id] = t; });
+        list.querySelectorAll('.task-card, .dict-item').forEach(function(card){
+            var id = card.getAttribute('data-id');
+            if (!id) return;
+            var info = _computeBadge(byId[id]);
+            var existing = card.querySelector('.task-card-badge.hyp-badge');
+            if (!info) {
+                if (existing) existing.remove();
+                return;
+            }
+            var badge = existing;
+            if (!badge) {
+                badge = document.createElement('span');
+                badge.className = 'task-card-badge hyp-badge ' + info.cls;
+                var target = card.querySelector('.task-card-topright')
+                          || card.querySelector('.dict-actions')
+                          || card.querySelector('.task-card-head');
+                if (target) target.appendChild(badge);
+                else card.appendChild(badge);
+            }
+            badge.className = 'task-card-badge hyp-badge ' + info.cls;
+            badge.textContent = info.text;
+            badge.title = info.title;
+        });
+    }
+
+    function _observe() {
+        var list = document.getElementById('tasksFullList');
+        if (!list || list._hypBadgeObsV145) return;
+        list._hypBadgeObsV145 = true;
+        new MutationObserver(function(){ setTimeout(_apply, 30); }).observe(list, { childList: true });
+        setTimeout(_apply, 60);
+    }
+
+    function boot() {
+        _observe();
+        setTimeout(function(){ _observe(); _apply(); }, 300);
+        setTimeout(_apply, 1000);
+        setTimeout(_apply, 2500);
+    }
+
+    if (document.readyState === 'loading') {
+        document.addEventListener('DOMContentLoaded', boot);
+    } else {
+        boot();
+    }
+
+    document.addEventListener('click', function(e){
+        if (!e.target || !e.target.closest) return;
+        if (e.target.closest('.tracker-tab[data-tab="tasks"]') ||
+            e.target.closest('#tskViewSeg button') ||
+            e.target.closest('#tskViewMode button')) {
+            setTimeout(_apply, 200);
+            setTimeout(_apply, 500);
+        }
+    }, true);
+
+    window.__trkAddHypBadges = _apply;
+})();
+
+
+/* ============================================================
+   PATCH v1.4.6 — Timeline-вид + валидация дат гипотез/заданий
+   ============================================================ */
+(function(){
+    'use strict';
+    if (window.__trkTimelineAndValidationV146) return;
+    window.__trkTimelineAndValidationV146 = true;
+
+    function esc(s) {
+        return String(s == null ? '' : s).replace(/[&<>"']/g, function(c) {
+            return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c];
+        });
+    }
+    function _state() { return window.__trkState || {}; }
+
+    /* ===== БЕЙДЖ ГИПОТЕЗ (совместим с v1.4.5) ===== */
+    function _computeHypBadge(t) {
+        if (!t || !Array.isArray(t.hypotheses) || !t.hypotheses.length) return null;
+        var hyps = t.hypotheses.filter(function(x){ return x && x.kind === 'hypothesis'; });
+        var tasks = t.hypotheses.filter(function(x){ return x && x.kind === 'task'; });
+        if (!hyps.length && !tasks.length) return null;
+        var hd = hyps.filter(function(x){ return x.status === 'done'; }).length;
+        var td = tasks.filter(function(x){ return x.status === 'done'; }).length;
+        var parts = [];
+        if (hyps.length) parts.push('🧪 ' + hd + '/' + hyps.length);
+        if (tasks.length) parts.push('📌 ' + td + '/' + tasks.length);
+        var allDone = (hd === hyps.length && td === tasks.length);
+        var anyDone = (hd > 0 || td > 0);
+        var cls = allDone ? 'hyp-badge-done' : (anyDone ? 'hyp-badge-progress' : 'hyp-badge-new');
+        return { text: parts.join(' · '), cls: cls, title: 'Гипотезы: ' + hd + '/' + hyps.length + ' · Задания: ' + td + '/' + tasks.length };
+    }
+
+    function _applyBadges() {
+        var list = document.getElementById('tasksFullList');
+        if (!list) return;
+        var st = _state();
+        var byId = {};
+        (st.tasks || []).forEach(function(t){ if (t && t.id) byId[t.id] = t; });
+        list.querySelectorAll('.task-card, .dict-item').forEach(function(card){
+            var id = card.getAttribute('data-id');
+            if (!id) return;
+            var info = _computeHypBadge(byId[id]);
+            var existing = card.querySelector('.task-card-badge.hyp-badge');
+            if (!info) { if (existing) existing.remove(); return; }
+            var badge = existing;
+            if (!badge) {
+                badge = document.createElement('span');
+                var target = card.querySelector('.task-card-topright') || card.querySelector('.task-card-head');
+                if (target) target.appendChild(badge);
+                else card.appendChild(badge);
+            }
+            badge.className = 'task-card-badge hyp-badge ' + info.cls;
+            badge.textContent = info.text;
+            badge.title = info.title;
+        });
+    }
+
+    /* Бейдж ставим только если v1.4.5 не применялся */
+    if (!window.__trkHypBadgeV145) {
+        function _observeBadge() {
+            var list = document.getElementById('tasksFullList');
+            if (!list || list._hypBadgeObsV146) return;
+            list._hypBadgeObsV146 = true;
+            new MutationObserver(function(){ setTimeout(_applyBadges, 30); }).observe(list, { childList: true });
+            setTimeout(_applyBadges, 60);
+        }
+        setTimeout(_observeBadge, 300);
+        setTimeout(_observeBadge, 1000);
+        setTimeout(_applyBadges, 2500);
+    }
+
+    /* ===== ВАЛИДАЦИЯ ===== */
+    function _daysBetween(a, b) {
+        if (!a || !b) return 0;
+        var pa = String(a).split('-'); var pb = String(b).split('-');
+        try {
+            var da = new Date(+pa[0], +pa[1]-1, +pa[2]);
+            var db = new Date(+pb[0], +pb[1]-1, +pb[2]);
+            return Math.round((db - da) / 86400000) + 1;
+        } catch(e) { return 0; }
+    }
+
+    function _validateHypDraft(taskStart, taskDeadline) {
+        var errors = [];
+        var hyps = [], jobs = [];
+        (window.__trkHypDraft || []).forEach(function(x) {
+            if (x && x.kind === 'hypothesis') hyps.push(x);
+            else if (x && x.kind === 'task') jobs.push(x);
+        });
+        if (!hyps.length && !jobs.length) return errors;
+        var taskDur = (taskStart && taskDeadline) ? _daysBetween(taskStart, taskDeadline) : 0;
+        var hypDurSum = 0;
+        hyps.forEach(function(h) {
+            var nm = h.title || '(без названия)';
+            if (taskStart && h.date_from && h.date_from < taskStart) {
+                errors.push('Гипотеза «' + nm + '»: начало ' + h.date_from + ' раньше задачи (' + taskStart + ')');
+            }
+            if (taskDeadline && h.date_to && h.date_to > taskDeadline) {
+                errors.push('Гипотеза «' + nm + '»: конец ' + h.date_to + ' позже дедлайна задачи (' + taskDeadline + ')');
+            }
+            if (h.date_from && h.date_to && h.date_to >= h.date_from) {
+                hypDurSum += _daysBetween(h.date_from, h.date_to);
+            }
+        });
+        if (taskDur > 0 && hypDurSum > taskDur) {
+            errors.push('Сумма сроков гипотез (' + hypDurSum + ' дн) превышает срок задачи (' + taskDur + ' дн)');
+        }
+        hyps.forEach(function(h) {
+            var nm = h.title || '(без названия)';
+            var kids = jobs.filter(function(tk){ return tk.parent === h.id; });
+            if (!kids.length) return;
+            var hypDur = (h.date_from && h.date_to) ? _daysBetween(h.date_from, h.date_to) : 0;
+            var jobDurSum = 0;
+            kids.forEach(function(tk) {
+                var jnm = tk.title || '(без названия)';
+                if (h.date_from && tk.date_from && tk.date_from < h.date_from) {
+                    errors.push('Задание «' + jnm + '» в гипотезе «' + nm + '»: начало раньше гипотезы');
+                }
+                if (h.date_to && tk.date_to && tk.date_to > h.date_to) {
+                    errors.push('Задание «' + jnm + '» в гипотезе «' + nm + '»: конец позже гипотезы');
+                }
+                if (tk.date_from && tk.date_to && tk.date_to >= tk.date_from) {
+                    jobDurSum += _daysBetween(tk.date_from, tk.date_to);
+                }
+            });
+            if (hypDur > 0 && jobDurSum > hypDur) {
+                errors.push('Сумма сроков заданий гипотезы «' + nm + '» (' + jobDurSum + ' дн) превышает её срок (' + hypDur + ' дн)');
+            }
+        });
+        return errors;
+    }
+
+    function _showValidationErrors(errs) {
+        var container = document.getElementById('hypTreeRoot');
+        if (!container) return;
+        var block = document.getElementById('hypValidationErrors');
+        if (!block) {
+            block = document.createElement('div');
+            block.id = 'hypValidationErrors';
+            block.className = 'hyp-validation-errors';
+            container.parentNode.insertBefore(block, container.nextSibling);
+        }
+        if (!errs.length) { block.remove(); return; }
+        block.innerHTML = '<div class="hve-title">⚠ Ошибки в датах гипотез/заданий (' + errs.length + '):</div>'
+            + '<ul>' + errs.map(function(e){ return '<li>' + esc(e) + '</li>'; }).join('') + '</ul>';
+        try { block.scrollIntoView({ behavior: 'smooth', block: 'center' }); } catch(e){}
+    }
+
+    function _liveValidate() {
+        var tm = document.getElementById('taskModal');
+        if (!tm || !tm.classList.contains('active')) return;
+        var s = (document.getElementById('task_start_date') || {}).value || '';
+        var e = (document.getElementById('task_deadline') || {}).value || '';
+        _showValidationErrors(_validateHypDraft(s, e));
+    }
+
+    document.addEventListener('change', function(ev) {
+        var t = ev.target;
+        if (!t) return;
+        if (t.id === 'task_start_date' || t.id === 'task_deadline') {
+            setTimeout(_liveValidate, 50); return;
+        }
+        if (t.classList && t.classList.contains('hyp-fld') &&
+            (t.getAttribute('data-k') === 'date_from' || t.getAttribute('data-k') === 'date_to')) {
+            setTimeout(_liveValidate, 100);
+        }
+    }, true);
+
+    /* ===== FETCH-ХУК: блокировка сохранения ===== */
+    var _nativeFetch = window.fetch;
+    if (typeof _nativeFetch === 'function' && !window.__trkHypValFetchV146) {
+        window.__trkHypValFetchV146 = true;
+        window.fetch = function(url, opts) {
+            if (typeof url !== 'string' || url.indexOf('/api/tracker/task/save') === -1) {
+                return _nativeFetch.apply(this, arguments);
+            }
+            if (!opts || (opts.method || 'GET').toUpperCase() !== 'POST') {
+                return _nativeFetch.apply(this, arguments);
+            }
+            var body;
+            try { body = JSON.parse(opts.body || '{}'); } catch(e) { return _nativeFetch.apply(this, arguments); }
+            var errs = _validateHypDraft(body.start_date || '', body.deadline || '');
+            if (errs.length) {
+                _showValidationErrors(errs);
+                if (typeof window.__trackerNotify === 'function') {
+                    window.__trackerNotify('❌ Исправьте ошибки в датах гипотез (' + errs.length + ')', 'error');
+                }
+                return Promise.resolve(new Response(JSON.stringify({
+                    success: false, error: 'hyp_dates_invalid', errors: errs
+                }), { status: 200, headers: { 'Content-Type': 'application/json' } }));
+            }
+            return _nativeFetch.apply(this, arguments);
+        };
+    }
+
+    /* ===== TIMELINE-ВИД ===== */
+    function _ensureTimelineBtn() {
+        var seg = document.getElementById('tskViewSeg');
+        if (!seg || seg.querySelector('[data-view="timeline"]')) return;
+        var b = document.createElement('button');
+        b.type = 'button';
+        b.setAttribute('data-view', 'timeline');
+        b.title = 'Таймлайн гипотез и заданий';
+        b.textContent = '🕐 Таймлайн';
+        seg.appendChild(b);
+    }
+
+    function _ensureTimelineContainer() {
+        var list = document.getElementById('tasksFullList');
+        if (!list) return null;
+        var tl = document.getElementById('tasksTimelineList');
+        if (!tl) {
+            tl = document.createElement('div');
+            tl.id = 'tasksTimelineList';
+            tl.className = 'tasks-timeline';
+            tl.style.display = 'none';
+            list.parentNode.insertBefore(tl, list.nextSibling);
+        }
+        return tl;
+    }
+
+    function _renderTaskTimeline(t) {
+        var hyps = (t.hypotheses || []).filter(function(x){ return x && x.kind === 'hypothesis'; });
+        var allTasks = (t.hypotheses || []).filter(function(x){ return x && x.kind === 'task'; });
+        var taskStart = t.start_date || '';
+        var taskEnd = t.deadline || '';
+        if (!taskStart) { hyps.forEach(function(h){ if (h.date_from && (!taskStart || h.date_from < taskStart)) taskStart = h.date_from; }); }
+        if (!taskEnd)   { hyps.forEach(function(h){ if (h.date_to && (!taskEnd || h.date_to > taskEnd)) taskEnd = h.date_to; }); }
+
+        var html = '<div class="task-timeline-card" data-id="' + esc(t.id) + '">';
+        html += '<div class="ttc-head">';
+        html += '<span class="ttc-icon">' + esc(t.icon || '📋') + '</span>';
+        html += '<span class="ttc-name">' + esc(t.name || '') + '</span>';
+        html += '<span class="ttc-dates">' + (t.start_date ? '🚀 ' + esc(t.start_date) : '🚀 —') + ' → ' + (t.deadline ? '⏰ ' + esc(t.deadline) : '⏰ —') + '</span>';
+        html += '</div>';
+        if (!hyps.length) {
+            html += '<div class="ttc-empty">Нет гипотез — добавьте их в карточке задачи</div></div>';
+            return html;
+        }
+        if (!taskStart || !taskEnd) {
+            html += '<div class="ttc-empty">Не заданы сроки задачи — таймлайн невозможен</div></div>';
+            return html;
+        }
+        var totalMs = (new Date(taskEnd + 'T00:00:00') - new Date(taskStart + 'T00:00:00'));
+        if (totalMs <= 0) totalMs = 86400000;
+        var _taskStartMs = new Date(taskStart + 'T00:00:00').getTime();
+        function _pct(dk) {
+            if (!dk) return 0;
+            try { var v = ((new Date(dk + 'T00:00:00').getTime() - _taskStartMs) / totalMs) * 100; return Math.max(0, Math.min(100, v)); }
+            catch(e) { return 0; }
+        }
+        function _unitW() { return Math.min(100, (86400000 / totalMs) * 100); }
+        html += '<div class="ttc-timeline">';
+        html += '<div class="ttc-row ttc-row-task"><div class="ttc-bar ttc-bar-task" style="left:0;width:100%" title="Задача: ' + esc(t.name) + ' (' + esc(taskStart) + ' — ' + esc(taskEnd) + ')">' + esc(t.name || '') + '</div></div>';
+        hyps.forEach(function(h, hi) {
+            var hS = h.date_from || taskStart;
+            var hE = h.date_to || taskEnd;
+            var hLeft = _pct(hS);
+            var hW = Math.max(2, (_pct(hE) + _unitW()) - hLeft);
+            var invalid = (h.date_from && taskStart && h.date_from < taskStart) || (h.date_to && taskEnd && h.date_to > taskEnd);
+            var sI = h.status === 'done' ? '✅' : (h.status === 'failed' ? '❌' : (h.status === 'in_progress' ? '🔄' : '⏳'));
+            html += '<div class="ttc-row ttc-row-hyp"><div class="ttc-bar ttc-bar-hyp' + (invalid ? ' ttc-bar-invalid' : '') + '" style="left:' + hLeft.toFixed(2) + '%;width:' + hW.toFixed(2) + '%" title="🧪 Гипотеза ' + (hi + 1) + ': ' + esc(h.title) + ' (' + esc(hS) + ' — ' + esc(hE) + ') ' + sI + '">' + sI + ' ' + esc(h.title || '') + '</div></div>';
+            var kids = allTasks.filter(function(x){ return x.parent === h.id; });
+            kids.forEach(function(tk, ti) {
+                var kS = tk.date_from || hS;
+                var kE = tk.date_to || hE;
+                var kLeft = _pct(kS);
+                var kW = Math.max(2, (_pct(kE) + _unitW()) - kLeft);
+                var tI = (tk.date_from && h.date_from && tk.date_from < h.date_from) || (tk.date_to && h.date_to && tk.date_to > h.date_to);
+                var sI2 = tk.status === 'done' ? '✅' : (tk.status === 'failed' ? '❌' : (tk.status === 'in_progress' ? '🔄' : '⏳'));
+                html += '<div class="ttc-row ttc-row-job"><div class="ttc-bar ttc-bar-job' + (tI ? ' ttc-bar-invalid' : '') + '" style="left:' + kLeft.toFixed(2) + '%;width:' + kW.toFixed(2) + '%" title="📌 Задание ' + (ti + 1) + ': ' + esc(tk.title) + ' (' + esc(kS) + ' — ' + esc(kE) + ') ' + sI2 + '">' + sI2 + ' ' + esc(tk.title || '') + '</div></div>';
+            });
+        });
+        html += '</div></div>';
+        return html;
+    }
+
+    function _renderTimeline() {
+        var list = document.getElementById('tasksFullList');
+        var tl = _ensureTimelineContainer();
+        if (!list || !tl) return;
+        var st = _state();
+        var byId = {};
+        (st.tasks || []).forEach(function(t){ if (t && t.id) byId[t.id] = t; });
+        var ids = [];
+        list.querySelectorAll('.task-card, .dict-item').forEach(function(card){
+            var id = card.getAttribute('data-id');
+            if (id) ids.push(id);
+        });
+        if (!ids.length) { tl.innerHTML = '<div class="dict-empty">Нет задач по фильтру</div>'; return; }
+        var html = '';
+        ids.forEach(function(id){
+            var t = byId[id];
+            if (t) html += _renderTaskTimeline(t);
+        });
+        tl.innerHTML = html;
+    }
+
+    function _setTimelineVisible(visible) {
+        var list = document.getElementById('tasksFullList');
+        var tl = _ensureTimelineContainer();
+        if (!list || !tl) return;
+        if (visible) { list.style.display = 'none'; tl.style.display = ''; }
+        else { list.style.display = ''; tl.style.display = 'none'; }
+    }
+
+    function _setActiveSeg(view) {
+        document.querySelectorAll('#tskViewSeg button').forEach(function(b){
+            b.classList.toggle('active', b.getAttribute('data-view') === view);
+        });
+    }
+
+    /* Клик по «Таймлайн» — перехватываем до PATCH 1.0.9 */
+    document.addEventListener('click', function(e){
+        if (!e.target || !e.target.closest) return;
+        var b = e.target.closest('#tskViewSeg button[data-view="timeline"]');
+        if (!b) return;
+        e.stopImmediatePropagation();
+        e.preventDefault();
+        var st = _state(); st.tskView = 'timeline';
+        try { localStorage.setItem('tracker_tsk_view', 'timeline'); } catch(er) {}
+        _setActiveSeg('timeline');
+        _setTimelineVisible(true);
+        _renderTimeline();
+    }, true);
+
+    /* Наблюдатель за #tasksFullList — синхронизируем видимость таймлайна */
+    function _observeList() {
+        var list = document.getElementById('tasksFullList');
+        if (!list || list._timelineObsV146) return;
+        list._timelineObsV146 = true;
+        new MutationObserver(function(){
+            var st = _state();
+            if (st.tskView === 'timeline') {
+                _setTimelineVisible(true);
+                _renderTimeline();
+            } else {
+                _setTimelineVisible(false);
+            }
+        }).observe(list, { childList: true });
+    }
+
+    /* Принудительное поддержание timeline-режима, если он выбран в storage */
+    setInterval(function(){
+        try {
+            if (localStorage.getItem('tracker_tsk_view') === 'timeline') {
+                var st = _state();
+                if (st.tskView !== 'timeline') {
+                    st.tskView = 'timeline';
+                    _ensureTimelineBtn();
+                    _setActiveSeg('timeline');
+                    _setTimelineVisible(true);
+                    _renderTimeline();
+                }
+            }
+        } catch(e) {}
+    }, 1500);
+
+    function boot() {
+        _ensureTimelineBtn();
+        _observeList();
+        setTimeout(_ensureTimelineBtn, 500);
+        setTimeout(_ensureTimelineBtn, 1500);
+        setTimeout(_observeList, 500);
+        setTimeout(_observeList, 1500);
+        try {
+            if (localStorage.getItem('tracker_tsk_view') === 'timeline') {
+                var st = _state(); st.tskView = 'timeline';
+                _setActiveSeg('timeline');
+                _setTimelineVisible(true);
+                _renderTimeline();
+            }
+        } catch(e) {}
+    }
+
+    if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', boot);
+    else boot();
+
+    document.addEventListener('click', function(e){
+        if (!e.target || !e.target.closest) return;
+        if (e.target.closest('.tracker-tab[data-tab="tasks"]')) {
+            setTimeout(_ensureTimelineBtn, 200);
+            setTimeout(_observeList, 300);
+        }
+    });
+
+    window.__trkTimelineRender = _renderTimeline;
+    window.__trkValidateHypDraft = _validateHypDraft;
+    window.__trkLiveValidate = _liveValidate;
+})();
+
+
+/* ============================================================
+   PATCH v1.4.7 — встраиваем таймлайн внутрь карточки задачи.
+   Показывается через CSS только при .tasks-grid[data-compact="1"].
+   Отдельный список #tasksTimelineList и кнопка «Таймлайн» больше
+   не используются (см. CSS).
+   ============================================================ */
+(function(){
+    'use strict';
+    if (window.__trkInlineTimelineV147) return;
+    window.__trkInlineTimelineV147 = true;
+
+    function esc(s) {
+        return String(s == null ? '' : s).replace(/[&<>"']/g, function(c) {
+            return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c];
+        });
+    }
+
+    /* Сброс localStorage.tracker_tsk_view === 'timeline' → 'compact',
+       чтобы старая логика v1.4.6 не включила отдельный список.
+       Плюс переключение state.tskView и обновление кнопок сегмента. */
+    (function _migrateFromTimelineView(){
+        try {
+            var ls = localStorage.getItem('tracker_tsk_view');
+            if (ls === 'timeline') {
+                localStorage.setItem('tracker_tsk_view', 'compact');
+                var st = window.__trkState || {};
+                st.tskView = 'compact';
+                try { if (typeof window.__trkRenderTasksFull === 'function') window.__trkRenderTasksFull(); } catch(e){}
+            }
+            // Обновить активность кнопок сегмента
+            var st2 = window.__trkState || {};
+            var seg = document.getElementById('tskViewSeg');
+            if (seg && st2.tskView) {
+                seg.querySelectorAll('button').forEach(function(b){
+                    if (b.getAttribute('data-view') === 'timeline') return;
+                    b.classList.toggle('active', b.getAttribute('data-view') === st2.tskView);
+                });
+            }
+            // Скрыть/убрать кнопку «Таймлайн»
+            var tlBtn = seg ? seg.querySelector('button[data-view="timeline"]') : null;
+            if (tlBtn && tlBtn.parentNode) tlBtn.parentNode.removeChild(tlBtn);
+        } catch(e) { console.warn('[v1.4.7 migrate]', e); }
+    })();
+
+    function _parseDate(iso) {
+        if (!iso) return null;
+        var p = String(iso).split('-');
+        if (p.length !== 3) return null;
+        var d = new Date(+p[0], +p[1]-1, +p[2]);
+        return isNaN(d.getTime()) ? null : d;
+    }
+
+    function _buildInlineTimeline(t) {
+        if (!t) return null;
+        var hyps = (t.hypotheses || []).filter(function(x){ return x && x.kind === 'hypothesis'; });
+        var allTasks = (t.hypotheses || []).filter(function(x){ return x && x.kind === 'task'; });
+        if (!hyps.length) return null; // нет гипотез — не вставляем
+
+        var taskStart = t.start_date || '';
+        var taskEnd = t.deadline || '';
+        // Fallback: минимальный/максимальный диапазон по гипотезам
+        if (!taskStart) hyps.forEach(function(h){ if (h.date_from && (!taskStart || h.date_from < taskStart)) taskStart = h.date_from; });
+        if (!taskEnd)   hyps.forEach(function(h){ if (h.date_to && (!taskEnd || h.date_to > taskEnd)) taskEnd = h.date_to; });
+
+        var dS = _parseDate(taskStart), dE = _parseDate(taskEnd);
+        var rangeFmt = '';
+        if (dS && dE) {
+            rangeFmt = esc(taskStart) + ' → ' + esc(taskEnd);
+        } else {
+            rangeFmt = 'нет дат';
+        }
+
+        var wrap = document.createElement('div');
+        wrap.className = 'task-card-inline-timeline';
+
+        var headHtml = '<div class="tcit-head"><span class="tcit-ico">🕐</span>'
+                     + '<span>Гипотезы и задания</span>'
+                     + '<span class="tcit-range">' + rangeFmt + '</span></div>';
+
+        if (!dS || !dE || dE < dS) {
+            wrap.innerHTML = headHtml + '<div class="tcit-track" style="padding:6px 0;color:var(--trk-meta);font-style:italic;font-size:0.75rem;">У задачи не заданы сроки для таймлайна</div>';
+            return wrap;
+        }
+
+        var totalMs = dE.getTime() - dS.getTime() + 86400000; // +1 день, чтобы последний день входил
+        if (totalMs <= 0) totalMs = 86400000;
+        var startMs = dS.getTime();
+        function _pct(iso) {
+            var d = _parseDate(iso);
+            if (!d) return null;
+            var v = ((d.getTime() - startMs) / totalMs) * 100;
+            return Math.max(0, Math.min(100, v));
+        }
+        var unitW = (86400000 / totalMs) * 100;
+
+        function _statusIcon(st) {
+            return st === 'done' ? '✅' : (st === 'failed' ? '❌' : (st === 'in_progress' ? '🔄' : '⏳'));
+        }
+
+        var track = '';
+
+        // Строка задачи
+        track += '<div class="tcit-row tcit-row-task">'
+              +  '<div class="tcit-bar tcit-bar-task" style="left:0;width:100%" title="' + esc(t.name || '') + ' (' + esc(taskStart) + ' — ' + esc(taskEnd) + ')">' + esc(t.name || '') + '</div>'
+              +  '</div>';
+
+        hyps.forEach(function(h, hi){
+            var hS = h.date_from || taskStart;
+            var hE = h.date_to || taskEnd;
+            var hL = _pct(hS);
+            var hR = _pct(hE);
+            if (hL === null) hL = 0;
+            if (hR === null) hR = 100;
+            var hW = Math.max(1, (hR + unitW) - hL);
+            var hS_ = h.date_from || '';
+            var hE_ = h.date_to || '';
+            var invalidH = (hS_ && taskStart && hS_ < taskStart) || (hE_ && taskEnd && hE_ > taskEnd);
+            track += '<div class="tcit-row tcit-row-hyp">'
+                  +    '<div class="tcit-bar tcit-bar-hyp' + (invalidH ? ' tcit-bar-invalid' : '') + '"'
+                  +         ' style="left:' + hL.toFixed(2) + '%;width:' + hW.toFixed(2) + '%"'
+                  +         ' title="🧪 Гипотеза ' + (hi + 1) + ': ' + esc(h.title || '') + ' (' + esc(hS) + ' — ' + esc(hE) + ') ' + _statusIcon(h.status) + '">'
+                  +      _statusIcon(h.status) + ' ' + esc(h.title || 'Без названия')
+                  +    '</div></div>';
+            var kids = allTasks.filter(function(x){ return x.parent === h.id; });
+            kids.forEach(function(tk, ti){
+                var kS = tk.date_from || hS;
+                var kE = tk.date_to || hE;
+                var kL = _pct(kS);
+                var kR = _pct(kE);
+                if (kL === null) kL = hL;
+                if (kR === null) kR = hR;
+                var kW = Math.max(1, (kR + unitW) - kL);
+                var invalidK = (tk.date_from && h.date_from && tk.date_from < h.date_from)
+                            || (tk.date_to && h.date_to && tk.date_to > h.date_to);
+                track += '<div class="tcit-row tcit-row-job">'
+                      +    '<div class="tcit-bar tcit-bar-job' + (invalidK ? ' tcit-bar-invalid' : '') + '"'
+                      +         ' style="left:' + kL.toFixed(2) + '%;width:' + kW.toFixed(2) + '%"'
+                      +         ' title="📌 Задание ' + (ti + 1) + ': ' + esc(tk.title || '') + ' (' + esc(kS) + ' — ' + esc(kE) + ') ' + _statusIcon(tk.status) + '">'
+                      +      _statusIcon(tk.status) + ' ' + esc(tk.title || 'Без названия')
+                      +    '</div></div>';
+            });
+        });
+
+        wrap.innerHTML = headHtml + '<div class="tcit-track">' + track + '</div>';
+        return wrap;
+    }
+
+    function _injectCard(card, task) {
+        if (!card || !task) return;
+        if (card.querySelector('.task-card-inline-timeline')) return;
+        var tl = _buildInlineTimeline(task);
+        if (!tl) return;
+        var foot = card.querySelector('.task-card-foot');
+        var mid = card.querySelector('.task-card-mid');
+        var head = card.querySelector('.task-card-head');
+        if (foot && foot.parentNode === card) card.insertBefore(tl, foot);
+        else if (mid && mid.parentNode === card) card.insertBefore(tl, mid.nextSibling);
+        else if (head && head.parentNode === card) card.insertBefore(tl, head.nextSibling);
+        else card.appendChild(tl);
+    }
+
+    function _applyAll() {
+        var list = document.getElementById('tasksFullList');
+        if (!list) return;
+        var st = window.__trkState || {};
+        var byId = {};
+        (st.tasks || []).forEach(function(t){ if (t && t.id) byId[t.id] = t; });
+        list.querySelectorAll('.task-card').forEach(function(card){
+            var id = card.getAttribute('data-id');
+            if (!id) return;
+            _injectCard(card, byId[id]);
+        });
+    }
+
+    function _observe() {
+        var list = document.getElementById('tasksFullList');
+        if (!list || list._inlineTlObsV147) return;
+        list._inlineTlObsV147 = true;
+        new MutationObserver(function(){ setTimeout(_applyAll, 30); })
+            .observe(list, { childList: true });
+        setTimeout(_applyAll, 60);
+    }
+
+    function boot() {
+        _observe();
+        setTimeout(function(){ _observe(); _applyAll(); }, 300);
+        setTimeout(_applyAll, 900);
+        setTimeout(_applyAll, 2000);
+    }
+
+    if (document.readyState === 'loading') {
+        document.addEventListener('DOMContentLoaded', boot);
+    } else {
+        boot();
+    }
+
+    document.addEventListener('click', function(e){
+        if (!e.target || !e.target.closest) return;
+        if (e.target.closest('.tracker-tab[data-tab="tasks"]') ||
+            e.target.closest('#tskViewSeg button') ||
+            e.target.closest('#tskViewMode button') ||
+            e.target.closest('.sum-filter')) {
+            setTimeout(_applyAll, 200);
+            setTimeout(_applyAll, 500);
+            setTimeout(_applyAll, 1200);
+        }
+    }, true);
+
+    window.__trkInlineTimelineRender = _applyAll;
+})();
+
+
+/* ============================================================
+   PATCH v1.4.9 — фикс сохранения иконки задачи (#task_icon)
+   ============================================================ */
+(function(){
+    'use strict';
+    if (window.__trkTaskIconFixV149) return;
+    window.__trkTaskIconFixV149 = true;
+
+    function _ensureTaskIcon() {
+        var modal = document.getElementById('taskModal');
+        if (!modal) return null;
+        var content = modal.querySelector('.modal-content');
+        if (!content) return null;
+        var iconEl = document.getElementById('task_icon');
+        if (iconEl) return iconEl;
+        // Создаём hidden input как direct child .modal-content —
+        // _restructure PATCH 1.0.3 / v1.1.1 сохраняет такие input[type=hidden]
+        iconEl = document.createElement('input');
+        iconEl.type = 'hidden';
+        iconEl.id = 'task_icon';
+        var prev = document.getElementById('taskIconPreview');
+        var cur = (prev && prev.textContent || '').trim();
+        iconEl.value = cur || '🚀';
+        content.insertBefore(iconEl, content.firstChild);
+        return iconEl;
+    }
+
+    function _syncFromPreview() {
+        var modal = document.getElementById('taskModal');
+        if (!modal || !modal.classList.contains('active')) return;
+        var iconEl = _ensureTaskIcon();
+        if (!iconEl) return;
+        var prev = document.getElementById('taskIconPreview');
+        if (!prev) return;
+        var cur = (prev.textContent || '').trim();
+        if (cur && cur !== (iconEl.value || '').trim()) {
+            iconEl.value = cur;
+        }
+    }
+
+    // 1) MutationObserver на #taskModal: при открытии создаём #task_icon
+    //    через несколько задержек — _restructure в task_modal_wide.js
+    //    работает по таймерам 50/250/600/1000/2500 мс.
+    function _watchModal() {
+        var modal = document.getElementById('taskModal');
+        if (!modal || modal._iconFixV149Obs) return;
+        modal._iconFixV149Obs = true;
+        new MutationObserver(function(){
+            if (modal.classList.contains('active')) {
+                setTimeout(_ensureTaskIcon, 60);
+                setTimeout(_ensureTaskIcon, 300);
+                setTimeout(_ensureTaskIcon, 800);
+                setTimeout(_syncFromPreview, 1500);
+                setTimeout(_ensureTaskIcon, 2600);
+            }
+        }).observe(modal, { attributes: true, attributeFilter: ['class'] });
+        if (modal.classList.contains('active')) {
+            setTimeout(_ensureTaskIcon, 60);
+            setTimeout(_ensureTaskIcon, 300);
+        }
+    }
+
+    // 2) Клик по .emoji-btn — до обработчика renderEmojiGrid:
+    //    гарантируем, что #task_icon существует и получает эмодзи.
+    document.addEventListener('click', function(e){
+        if (!e.target || !e.target.closest) return;
+        var btn = e.target.closest('.emoji-btn');
+        if (!btn) return;
+        var modal = document.getElementById('taskModal');
+        if (!modal) return;
+        var em = btn.getAttribute('data-emoji') || '🚀';
+        // Делаем сразу — renderEmojiGrid потом перепишет то же значение
+        var iconEl = _ensureTaskIcon();
+        if (iconEl) iconEl.value = em;
+        // И ещё раз чуть позже (на случай гонки с _restructure)
+        setTimeout(function(){
+            var el2 = _ensureTaskIcon();
+            if (el2) el2.value = em;
+        }, 30);
+    }, true);
+
+    // 3) Клик по #saveTaskBtn (capture phase) — до saveTask.
+    //    Синхронизируем #task_icon.value из #taskIconPreview.
+    document.addEventListener('click', function(e){
+        if (!e.target || !e.target.closest) return;
+        if (!e.target.closest('#saveTaskBtn')) return;
+        var modal = document.getElementById('taskModal');
+        if (!modal || !modal.classList.contains('active')) return;
+        _syncFromPreview();
+    }, true);
+
+    // 4) На submit через Enter в поле — тоже синхронизируем.
+    //    (маловероятно, но для надёжности)
+    document.addEventListener('keydown', function(e){
+        if (e.key !== 'Enter' && e.key !== 'NumpadEnter') return;
+        var modal = document.getElementById('taskModal');
+        if (!modal || !modal.classList.contains('active')) return;
+        var t = e.target;
+        if (!t || !t.closest) return;
+        if (t.tagName === 'TEXTAREA') return;
+        if (t.tagName === 'BUTTON' && t.closest('.modal-actions')) {
+            _syncFromPreview();
+        }
+    }, true);
+
+    _watchModal();
+    setTimeout(_watchModal, 500);
+    setTimeout(_watchModal, 1500);
+
+    window.__trkEnsureTaskIcon = _ensureTaskIcon;
+    window.__trkSyncTaskIconFromPreview = _syncFromPreview;
+})();
+
+
+/* ============================================================
+   PATCH v1.5.1 — модалка отметки: селектор гипотезы/задания
+   ============================================================ */
+(function(){
+    'use strict';
+    if (window.__trkLogHypItemV151) return;
+    window.__trkLogHypItemV151 = true;
+
+    function _populateHypSelect(taskId) {
+        var wrap = document.getElementById('logHypGroup');
+        var sel = document.getElementById('log_hyp_item');
+        if (!wrap || !sel) return;
+        if (!taskId) { wrap.style.display = 'none'; sel.innerHTML = ''; return; }
+        var st = window.__trkState || {};
+        var t = null;
+        (st.tasks || []).forEach(function(x){ if (x && x.id === taskId) t = x; });
+        if (!t) { wrap.style.display = 'none'; sel.innerHTML = ''; return; }
+        var hyps = (Array.isArray(t.hypotheses) ? t.hypotheses : []).filter(function(x){ return x && x.kind === 'hypothesis'; });
+        if (!hyps.length) { wrap.style.display = 'none'; sel.innerHTML = ''; return; }
+        var allJobs = t.hypotheses.filter(function(x){ return x && x.kind === 'task'; });
+        var prevVal = sel.value || '';
+        var html = '<option value="">— не привязано —</option>';
+        hyps.forEach(function(h, hi){
+            html += '<option value="' + h.id + '">🧪 Гипотеза ' + (hi + 1) + ': ' + (h.title || 'без названия') + '</option>';
+            allJobs.filter(function(x){ return x.parent === h.id; }).forEach(function(tk, ti){
+                html += '<option value="' + tk.id + '">   📌 Задание ' + (ti + 1) + ': ' + (tk.title || 'без названия') + '</option>';
+            });
+        });
+        sel.innerHTML = html;
+        if (prevVal) {
+            for (var i = 0; i < sel.options.length; i++) {
+                if (sel.options[i].value === prevVal) { sel.value = prevVal; break; }
+            }
+        }
+        wrap.style.display = '';
+    }
+
+    document.addEventListener('change', function(ev){
+        if (!ev.target || ev.target.id !== 'log_task') return;
+        setTimeout(function(){ _populateHypSelect(ev.target.value); }, 20);
+    }, true);
+
+    (function _watchLogModal(){
+        var m = document.getElementById('logModal');
+        if (!m || m._logHypItemObsV151) return;
+        m._logHypItemObsV151 = true;
+        new MutationObserver(function(){
+            if (m.classList.contains('active')) {
+                setTimeout(function(){
+                    var tid = (document.getElementById('log_task') || {}).value || '';
+                    _populateHypSelect(tid);
+                }, 120);
+                setTimeout(function(){
+                    var tid = (document.getElementById('log_task') || {}).value || '';
+                    _populateHypSelect(tid);
+                }, 500);
+            }
+        }).observe(m, { attributes: true, attributeFilter: ['class'] });
+    })();
+
+    document.addEventListener('click', function(e){
+        if (!e.target || !e.target.closest) return;
+        if (e.target.closest('#log_task_dropdown .ltd-item')) {
+            setTimeout(function(){
+                var tid = (document.getElementById('log_task') || {}).value || '';
+                _populateHypSelect(tid);
+            }, 50);
+        }
+    }, true);
+
+    var _native = window.fetch;
+    if (typeof _native === 'function' && !window.__trkLogHypItemFetchV151) {
+        window.__trkLogHypItemFetchV151 = true;
+        window.fetch = function(url, opts){
+            if (typeof url !== 'string' || url.indexOf('/api/tracker/log/save') === -1) {
+                return _native.apply(this, arguments);
+            }
+            if (!opts || (opts.method || 'GET').toUpperCase() !== 'POST') {
+                return _native.apply(this, arguments);
+            }
+            try {
+                var body = JSON.parse(opts.body || '{}');
+                var sel = document.getElementById('log_hyp_item');
+                if (sel && body.task_id) {
+                    body.hyp_item_id = sel.value || '';
+                }
+                opts = Object.assign({}, opts, { body: JSON.stringify(body) });
+            } catch(e) {}
+            return _native.call(this, url, opts);
+        };
+    }
+
+    (function _wrapOpenLogModal(){
+        var orig = window.__trkOpenLogModal;
+        if (typeof orig !== 'function' || orig._hypItemV151) return;
+        var w = function(entry){
+            var r = orig.apply(this, arguments);
+            if (entry && entry.hyp_item_id) {
+                setTimeout(function(){
+                    var tid = (document.getElementById('log_task') || {}).value || '';
+                    _populateHypSelect(tid);
+                    var sel = document.getElementById('log_hyp_item');
+                    if (sel) {
+                        for (var i = 0; i < sel.options.length; i++) {
+                            if (sel.options[i].value === entry.hyp_item_id) { sel.value = entry.hyp_item_id; break; }
+                        }
+                    }
+                }, 220);
+                setTimeout(function(){
+                    var sel = document.getElementById('log_hyp_item');
+                    if (sel && entry.hyp_item_id) {
+                        for (var i = 0; i < sel.options.length; i++) {
+                            if (sel.options[i].value === entry.hyp_item_id) { sel.value = entry.hyp_item_id; break; }
+                        }
+                    }
+                }, 600);
+            }
+            return r;
+        };
+        w._hypItemV151 = true;
+        window.__trkOpenLogModal = w;
+    })();
+
+    window.__trkPopulateHypSelect = _populateHypSelect;
+})();
+
+
+/* ============================================================
+   PATCH v1.5.1 — календарь: префикс гипотезы/задания в tooltip
+   ============================================================ */
+(function(){
+    'use strict';
+    if (window.__trkCalHypPrefixV151) return;
+    window.__trkCalHypPrefixV151 = true;
+
+    function _hypNameById(taskId, hypId) {
+        if (!hypId) return '';
+        var st = window.__trkState || {};
+        var tasks = st.tasks || [];
+        var t = null;
+        for (var i = 0; i < tasks.length; i++) if (tasks[i].id === taskId) { t = tasks[i]; break; }
+        if (!t || !Array.isArray(t.hypotheses)) return '';
+        for (var j = 0; j < t.hypotheses.length; j++) {
+            var it = t.hypotheses[j];
+            if (it && it.id === hypId) {
+                return (it.kind === 'hypothesis' ? '🧪 ' : '📌 ') + (it.title || '');
+            }
+        }
+        return '';
+    }
+
+    function _decorateCalendarEntries() {
+        var grid = document.getElementById('calGrid');
+        if (!grid) return;
+        var st = window.__trkState || {};
+        var cal = st.calendar;
+        if (!cal) return;
+        grid.querySelectorAll('.cal-entry').forEach(function(el) {
+            if (el._hypPrefixed) return;
+            var txt = (el.textContent || '').trim();
+            if (!txt) return;
+            // Ищем запись по совпадению начала title — хрупко, но мы не храним id в DOM.
+            // Используем href по данным из state.calendar: перебор — дорого.
+            // Простое решение: дать пользователю самому навести и увидеть.
+            el._hypPrefixed = true;
+        });
+    }
+
+    // Правильная реализация — встроиться в саму renderCalendar не выйдет без
+    // редактирования базового кода. Используем MutationObserver на #calGrid,
+    // чтобы после рендера пройтись по записям и подставить tooltip.
+    function _enrichCalEntries() {
+        var grid = document.getElementById('calGrid');
+        if (!grid) return;
+        var st = window.__trkState || {};
+        var cal = st.calendar;
+        if (!cal || !cal.days) return;
+        // Собираем id записей по дню
+        var byKey = {};
+        cal.days.forEach(function(day) {
+            (day.entries || []).forEach(function(en) {
+                byKey[day.date + '||' + en.employee_id + '||' + en.task_id + '||' + (en.hours || 0)] = en;
+            });
+        });
+        grid.querySelectorAll('.cal-cell').forEach(function(cell) {
+            var dk = cell.getAttribute('data-date');
+            if (!dk) return;
+            var day = cal.days.find(function(d){ return d.date === dk; });
+            if (!day) return;
+            var entryEls = cell.querySelectorAll('.cal-entry');
+            entryEls.forEach(function(el, idx) {
+                var en = (day.entries || [])[idx];
+                if (!en || !en.hyp_item_id) return;
+                var nm = _hypNameById(en.task_id, en.hyp_item_id);
+                if (!nm) return;
+                var ttl = el.getAttribute('title') || '';
+                if (ttl.indexOf(nm) === -1) {
+                    el.setAttribute('title', nm + ' · ' + ttl);
+                }
+            });
+        });
+    }
+
+    function _observe() {
+        var grid = document.getElementById('calGrid');
+        if (!grid || grid._hypPrefixObsV151) return;
+        grid._hypPrefixObsV151 = true;
+        new MutationObserver(function(){ setTimeout(_enrichCalEntries, 30); })
+            .observe(grid, { childList: true });
+        setTimeout(_enrichCalEntries, 100);
+    }
+
+    setTimeout(_observe, 500);
+    setTimeout(_observe, 1500);
+    setTimeout(_enrichCalEntries, 2500);
+
+    document.addEventListener('click', function(e){
+        if (!e.target || !e.target.closest) return;
+        if (e.target.closest('.tracker-tab[data-tab="calendar"]') ||
+            e.target.closest('#calPrevBtn') ||
+            e.target.closest('#calNextBtn') ||
+            e.target.closest('#calTodayBtn')) {
+            setTimeout(_enrichCalEntries, 300);
+            setTimeout(_enrichCalEntries, 1000);
+        }
+    });
+
+    window.__trkEnrichCalHypPrefix = _enrichCalEntries;
+})();
+
+
+/* ============================================================
+   PATCH v1.5.2 — очистка дублей <details> в logModal + обогащение
+   ленты «📝 Отметки о ходе работы» приказами/ссылками
+   ============================================================ */
+(function(){
+    'use strict';
+    if (window.__trkSplitFieldsV152) return;
+    window.__trkSplitFieldsV152 = true;
+
+    function _esc(s) {
+        return String(s == null ? '' : s).replace(/[&<>"']/g, function(c) {
+            return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c];
+        });
+    }
+
+    /* ---------- 1. Схлопываем накопленные <details><details> ---------- */
+    function _flattenDoubleLogSections() {
+        var modal = document.getElementById('logModal');
+        if (!modal) return;
+        var mf = document.getElementById('logMultiFields');
+        if (!mf) return;
+        var changed = false;
+        mf.querySelectorAll('details.log-section').forEach(function(outer){
+            var outerBody = outer.querySelector(':scope > .log-section-body');
+            if (!outerBody) return;
+            var inners = outerBody.querySelectorAll(':scope > details.log-section');
+            if (!inners.length) return;
+            inners.forEach(function(inner){
+                var innerBody = inner.querySelector(':scope > .log-section-body');
+                if (innerBody) {
+                    while (innerBody.firstChild) {
+                        outerBody.appendChild(innerBody.firstChild);
+                    }
+                }
+                inner.remove();
+                changed = true;
+            });
+        });
+        if (changed) {
+            console.log('[v1.5.2] схлопнуты вложенные log-section');
+        }
+    }
+
+    /* ---------- 2. Обогащаем ленту приказами/ссылками из work_logs ---------- */
+    function _enrichProgressItems() {
+        var root = document.getElementById('hypTreeRoot');
+        if (!root) return;
+        var st = window.__trkState || {};
+        var byLog = {};
+        (st.log || []).forEach(function(l){
+            if (l && l.id != null) {
+                byLog[String(l.id)] = l;
+            }
+        });
+        root.querySelectorAll('.hyp-progress-item').forEach(function(el){
+            if (el._extraDone) return;
+            var lid = el.getAttribute('data-log-id');
+            if (!lid) return;
+            var log = byLog[String(lid)];
+            if (!log) return;
+            var orders = Array.isArray(log.orders) ? log.orders : [];
+            var links = Array.isArray(log.links) ? log.links : [];
+            el._extraDone = true;
+            if (!orders.length && !links.length) return;
+            var extra = document.createElement('div');
+            extra.className = 'hyp-progress-extra';
+            var h = '';
+            orders.forEach(function(o){
+                h += '<span class="hyp-progress-extra-item">📄 '
+                  +  _esc(String((o && o.description) || ''))
+                  +  (o && o.value ? ' · <b>' + _esc(String(o.value)) + '</b>' : '')
+                  +  '</span>';
+            });
+            links.forEach(function(lk){
+                var url = String((lk && lk.url) || '');
+                var desc = String((lk && lk.description) || '');
+                var label = desc || url;
+                h += '<span class="hyp-progress-extra-item">🔗 ' + _esc(label) + '</span>';
+            });
+            extra.innerHTML = h;
+            var body = el.querySelector('.hyp-progress-body');
+            if (body) body.appendChild(extra);
+            else el.appendChild(extra);
+        });
+    }
+
+    /* ---------- 3. Lifecycle: при открытии logModal — flatten, при рендере дерева — enrich ---------- */
+    (function _watchLogModal(){
+        var m = document.getElementById('logModal');
+        if (!m || m._splitFieldsV152) return;
+        m._splitFieldsV152 = true;
+        new MutationObserver(function(){
+            if (m.classList.contains('active')) {
+                setTimeout(_flattenDoubleLogSections, 60);
+                setTimeout(_flattenDoubleLogSections, 300);
+                setTimeout(_flattenDoubleLogSections, 800);
+                setTimeout(_flattenDoubleLogSections, 1600);
+            }
+        }).observe(m, { attributes: true, attributeFilter: ['class'] });
+        if (m.classList.contains('active')) {
+            setTimeout(_flattenDoubleLogSections, 60);
+            setTimeout(_flattenDoubleLogSections, 400);
+        }
+    })();
+
+    (function _watchHypTree(){
+        var root = document.getElementById('hypTreeRoot');
+        if (!root || root._enrichV152) return;
+        root._enrichV152 = true;
+        new MutationObserver(function(){
+            setTimeout(_enrichProgressItems, 30);
+        }).observe(root, { childList: true, subtree: true });
+        setTimeout(_enrichProgressItems, 100);
+    })();
+
+    // Повторно подключить наблюдатели — на случай поздней инициализации
+    setTimeout(function(){
+        try { _flattenDoubleLogSections(); } catch(e){}
+    }, 400);
+    setTimeout(function(){
+        try { _flattenDoubleLogSections(); } catch(e){}
+    }, 1500);
+    setTimeout(function(){
+        try { _enrichProgressItems(); } catch(e){}
+    }, 1000);
+
+    document.addEventListener('click', function(e){
+        if (!e.target || !e.target.closest) return;
+        if (e.target.closest('#dayAddBtn') ||
+            e.target.closest('#dayModal .dict-action-btn[data-act="edit"]') ||
+            e.target.closest('#logDayExistingList .dict-action-btn[data-act="edit"]')) {
+            setTimeout(_flattenDoubleLogSections, 300);
+            setTimeout(_flattenDoubleLogSections, 800);
+            setTimeout(_flattenDoubleLogSections, 1600);
+        }
+    }, true);
+
+    window.__trkFlattenLogSections = _flattenDoubleLogSections;
+    window.__trkEnrichProgressItems = _enrichProgressItems;
+})();
+
+
+/* ============================================================
+   PATCH v1.5.3 — перенос блока «Назначено, но не заведено»
+   из #logDayExisting в #logAssignedWrap.
+   ============================================================ */
+(function(){
+    'use strict';
+    if (window.__trkAssignedBlockV153) return;
+    window.__trkAssignedBlockV153 = true;
+
+    function _moveAssignedBlock() {
+        var modal = document.getElementById('logModal');
+        if (!modal) return;
+        var target = document.getElementById('logAssignedWrap');
+        if (!target) return;
+        var existing = document.getElementById('logDayExisting');
+        var blocks = [];
+        if (existing) {
+            existing.querySelectorAll('.log-assigned-block').forEach(function(el){ blocks.push(el); });
+        }
+        // На случай если блок уже в правильном месте — не дублируем
+        var inTarget = target.querySelector('.log-assigned-block');
+        if (inTarget) {
+            blocks.forEach(function(el){ if (el !== inTarget) el.remove(); });
+            return;
+        }
+        if (!blocks.length) return;
+        // Берём первый (PATCH 41 создаёт только один)
+        var first = blocks[0];
+        blocks.slice(1).forEach(function(el){ el.remove(); });
+        target.appendChild(first);
+    }
+
+    // Наблюдатель на #logDayExisting: как только PATCH 41 вставит туда
+    // .log-assigned-block — сразу переносим в #logAssignedWrap
+    (function _watchExisting(){
+        var existing = document.getElementById('logDayExisting');
+        if (!existing || existing._assignedV153Obs) return;
+        existing._assignedV153Obs = true;
+        new MutationObserver(function(){
+            setTimeout(_moveAssignedBlock, 10);
+        }).observe(existing, { childList: true, subtree: true });
+    })();
+
+    // Наблюдатель на #logAssignedWrap: если в него напрямую что-то вставили
+    // (например, обновлённый PATCH 41 или наш собственный перенос) — не мешаем
+    (function _watchTarget(){
+        var target = document.getElementById('logAssignedWrap');
+        if (!target || target._assignedV153Obs) return;
+        target._assignedV153Obs = true;
+    })();
+
+    // При открытии logModal — перепроверяем через серию таймеров
+    (function _watchModal(){
+        var m = document.getElementById('logModal');
+        if (!m || m._assignedV153Obs) return;
+        m._assignedV153Obs = true;
+        new MutationObserver(function(){
+            if (m.classList.contains('active')) {
+                setTimeout(_moveAssignedBlock, 60);
+                setTimeout(_moveAssignedBlock, 200);
+                setTimeout(_moveAssignedBlock, 500);
+                setTimeout(_moveAssignedBlock, 1000);
+            }
+        }).observe(m, { attributes: true, attributeFilter: ['class'] });
+        if (m.classList.contains('active')) {
+            setTimeout(_moveAssignedBlock, 60);
+            setTimeout(_moveAssignedBlock, 300);
+        }
+    })();
+
+    // При клике по вкладке «Показать всех» PATCH 41 удаляет блок.
+    // Возвращаем: через 150 мс вызываем decorate из PATCH 41, чтобы
+    // он пересоздал блок (decorate уже проверяет _mode() !== 'me' → removeBlock).
+    // Пользователь хочет видеть блок всегда, независимо от вкладки.
+    // Поэтому мы повторно вызываем наш _moveAssignedBlock после клика.
+    document.addEventListener('click', function(e){
+        if (!e.target || !e.target.closest) return;
+        if (e.target.closest('#logExistingTabs .log-existing-tab')) {
+            setTimeout(_moveAssignedBlock, 200);
+            setTimeout(_moveAssignedBlock, 500);
+            setTimeout(function(){
+                // Форсим пересоздание блока: если его нет в DOM,
+                // то вызываем декоратор PATCH 41 напрямую через глобальный хук
+                if (typeof window.__trkLogAssignedDecorate === 'function') {
+                    try { window.__trkLogAssignedDecorate(); } catch(er){}
+                    setTimeout(_moveAssignedBlock, 80);
+                }
+            }, 700);
+        }
+    }, true);
+
+    // Первичная попытка + повторные (на случай позднего PATCH 41)
+    setTimeout(_moveAssignedBlock, 500);
+    setTimeout(_moveAssignedBlock, 1500);
+    setTimeout(_moveAssignedBlock, 3000);
+
+    document.addEventListener('click', function(e){
+        if (!e.target || !e.target.closest) return;
+        if (e.target.closest('#dayAddBtn') ||
+            e.target.closest('#dayModal .dict-action-btn[data-act="edit"]') ||
+            e.target.closest('#logDayExistingList .dict-action-btn[data-act="edit"]')) {
+            setTimeout(_moveAssignedBlock, 300);
+            setTimeout(_moveAssignedBlock, 800);
+            setTimeout(_moveAssignedBlock, 1600);
+        }
+    }, true);
+
+    window.__trkMoveAssignedBlock = _moveAssignedBlock;
+})();
+
+
+/* ============================================================
+   PATCH v1.5.4 — триггер селекта гипотез в модалке отметки.
+   Покрывает все способы выбора задачи:
+   - пользователь печатает вручную → input на #log_task_input
+   - выбирает из dropdown → mousedown capture на .ltd-item
+   - v1.0.6 диспатчит change → change на #log_task_input
+   - программный set #log_task.value в любом месте → polling 300мс
+   ============================================================ */
+(function(){
+    'use strict';
+    if (window.__trkHypSelectTriggerV154) return;
+    window.__trkHypSelectTriggerV154 = true;
+
+    function _trigger() {
+        if (typeof window.__trkPopulateHypSelect !== 'function') return;
+        var tid = (document.getElementById('log_task') || {}).value || '';
+        try { window.__trkPopulateHypSelect(tid); } catch(e){ console.warn('[v1.5.4 trigger]', e); }
+    }
+
+    /* 1. Пользователь печатает в поле задачи — дебаунс 100 мс */
+    var _debounce = null;
+    document.addEventListener('input', function(ev){
+        if (!ev.target || ev.target.id !== 'log_task_input') return;
+        if (_debounce) clearTimeout(_debounce);
+        _debounce = setTimeout(_trigger, 100);
+    }, true);
+
+    /* 2. v1.0.6 диспатчит change на #log_task_input в _chooseByIdx */
+    document.addEventListener('change', function(ev){
+        if (!ev.target) return;
+        if (ev.target.id === 'log_task_input' || ev.target.id === 'log_task') {
+            setTimeout(_trigger, 30);
+        }
+    }, true);
+
+    /* 3. mousedown capture на .ltd-item — до _chooseByIdx v1.0.6,
+          потому что v1.0.6 слушает mousedown и вызывает stopPropagation */
+    document.addEventListener('mousedown', function(e){
+        if (!e.target || !e.target.closest) return;
+        if (!e.target.closest('#log_task_dropdown .ltd-item')) return;
+        setTimeout(_trigger, 80);
+        setTimeout(_trigger, 300);
+    }, true);
+
+    /* 4. Polling — страховка на любые программные изменения #log_task.value */
+    var _poll = null;
+    var _lastTid = null;
+    function _startPoll() {
+        if (_poll) return;
+        _lastTid = null;
+        _poll = setInterval(function(){
+            var m = document.getElementById('logModal');
+            if (!m || !m.classList.contains('active')) {
+                clearInterval(_poll); _poll = null; return;
+            }
+            var tid = (document.getElementById('log_task') || {}).value || '';
+            if (tid !== _lastTid) {
+                _lastTid = tid;
+                _trigger();
+            }
+        }, 300);
+    }
+
+    function _watchModal(){
+        var m = document.getElementById('logModal');
+        if (!m || m._hypTriggerV154) return;
+        m._hypTriggerV154 = true;
+        new MutationObserver(function(){
+            if (m.classList.contains('active')) {
+                setTimeout(_trigger, 60);
+                setTimeout(_trigger, 200);
+                setTimeout(_trigger, 500);
+                setTimeout(_trigger, 1000);
+                _startPoll();
+            } else {
+                if (_poll) { clearInterval(_poll); _poll = null; }
+                _lastTid = null;
+            }
+        }).observe(m, { attributes: true, attributeFilter: ['class'] });
+        if (m.classList.contains('active')) _startPoll();
+    }
+
+    _watchModal();
+    setTimeout(_watchModal, 500);
+    setTimeout(_watchModal, 1500);
+
+    /* 5. Дополнительные точки входа */
+    document.addEventListener('click', function(e){
+        if (!e.target || !e.target.closest) return;
+        if (e.target.closest('#dayAddBtn') ||
+            e.target.closest('#dayModal .dict-action-btn[data-act="edit"]') ||
+            e.target.closest('#logDayExistingList .dict-action-btn[data-act="edit"]')) {
+            setTimeout(_trigger, 300);
+            setTimeout(_trigger, 800);
+            setTimeout(_trigger, 1600);
+        }
+    }, true);
+
+    setTimeout(_startPoll, 500);
+    setTimeout(_startPoll, 1500);
+
+    window.__trkTriggerHypSelect = _trigger;
+})();
+
+
+/* ============================================================
+   PATCH v1.0.20 — защита от перезаписи правок пользователя.
+   Флаги ставятся на isTrusted=true input/change в #taskModal / #logModal.
+   Программная установка value/checked (fillTaskModal, populate) их не ставит —
+   .value = и .checked = не порождают событий. Сброс — при открытии модалки.
+   ============================================================ */
+(function(){
+'use strict';
+if (window.__trkRefillGuardV120) return;
+window.__trkRefillGuardV120 = true;
+
+function _bindTouch(modalId, flag) {
+    var m = document.getElementById(modalId);
+    if (!m) return;
+    function _set(e) {
+        if (!e || !e.isTrusted) return;
+        var t = e.target;
+        if (!t || !t.closest) return;
+        if (!t.closest('#' + modalId)) return;
+        window[flag] = true;
+    }
+    m.addEventListener('input', _set, true);
+    m.addEventListener('change', _set, true);
+    // Сброс при открытии.
+    new MutationObserver(function(){
+        if (m.classList.contains('active')) {
+            window[flag] = false;
+        }
+    }).observe(m, {attributes: true, attributeFilter: ['class']});
+}
+
+_bindTouch('taskModal', '__trkTaskModalUserTouched');
+_bindTouch('logModal', '__trkLogModalUserTouched');
+})();
+
+
+/* ============================================================
+   PATCH v1.0.32 — Баннер «данные устарели» при недоступности API.
+   Показывается после 3+ ошибок подряд, если последний успешный
+   API-вызов был >30с назад. Скрывается на первом успешном ответе.
+   ============================================================ */
+(function(){
+'use strict';
+if (window.__trkStaleBannerV132) return;
+window.__trkStaleBannerV132 = true;
+
+var FAIL_THRESHOLD = 3;
+var STALE_MS = 30000;
+var _failures = 0;
+var _lastOk = Date.now();
+var _bannerShown = false;
+
+function _ensureBanner() {
+    var b = document.getElementById('trkStaleBanner');
+    if (b) return b;
+    b = document.createElement('div');
+    b.id = 'trkStaleBanner';
+    b.style.cssText = 'position:fixed;top:0;left:0;right:0;z-index:9998;padding:10px 16px;background:rgba(241,196,15,0.95);color:#000;font-size:0.88rem;font-weight:600;display:none;align-items:center;gap:12px;box-shadow:0 2px 8px rgba(0,0,0,0.20);font-family:inherit;';
+    b.innerHTML = '<span style="flex:1;min-width:0;word-break:break-word;">⚠ Данные могут быть устаревшими — нет связи с сервером</span>'
+        + '<button type="button" id="trkStaleReload" style="padding:6px 14px;border:none;border-radius:6px;background:#000;color:#fff;cursor:pointer;font-family:inherit;font-weight:700;font-size:0.82rem;white-space:nowrap;">Обновить страницу</button>'
+        + '<button type="button" id="trkStaleClose" style="padding:6px 10px;border:none;border-radius:6px;background:transparent;color:#000;cursor:pointer;font-family:inherit;font-size:1.1rem;line-height:1;" aria-label="Скрыть">×</button>';
+    document.body.appendChild(b);
+    var reload = document.getElementById('trkStaleReload');
+    if (reload) reload.addEventListener('click', function(){ location.reload(); });
+    var close = document.getElementById('trkStaleClose');
+    if (close) close.addEventListener('click', function(){ b.style.display = 'none'; _bannerShown = false; });
+    return b;
+}
+
+function _show() {
+    if (_bannerShown) return;
+    _bannerShown = true;
+    var b = _ensureBanner();
+    b.style.display = 'flex';
+}
+
+function _hide() {
+    if (!_bannerShown) return;
+    _bannerShown = false;
+    var b = document.getElementById('trkStaleBanner');
+    if (b) b.style.display = 'none';
+}
+
+var _nativeFetch = window.fetch;
+if (typeof _nativeFetch === 'function') {
+    window.fetch = function(url, opts) {
+        var _isApi = (typeof url === 'string' && url.indexOf('/api/') === 0);
+        var _p = _nativeFetch.apply(this, arguments);
+        if (!_isApi) return _p;
+        return _p.then(function(r){
+            if (r && r.ok) {
+                _lastOk = Date.now();
+                _failures = 0;
+                _hide();
+            } else if (r && r.status >= 500) {
+                _failures++;
+                if (_failures >= FAIL_THRESHOLD && Date.now() - _lastOk > STALE_MS) _show();
+            }
+            return r;
+        }).catch(function(err){
+            _failures++;
+            if (_failures >= FAIL_THRESHOLD && Date.now() - _lastOk > STALE_MS) _show();
+            throw err;
+        });
+    };
+}
+
+setInterval(function(){
+    if (Date.now() - _lastOk > STALE_MS * 2) _show();
+}, 15000);
+})();
+
+
+/* ============================================================
+   PATCH v1.0.43 — Универсальный фикс bell «Прочитать все».
+   ============================================================ */
+(function(){
+'use strict';
+if (window.__trkBellFixV143) return;
+window.__trkBellFixV143 = true;
+function _getCsrf(){
+    var t = window.REESTR_CSRF || '';
+    if (!t) { var m = document.querySelector('meta[name="csrf-token"]'); if (m) t = m.getAttribute('content') || ''; }
+    return t;
+}
+function _notifyMsg(msg, kind){
+    if (typeof window.__trackerNotify === 'function') { try { window.__trackerNotify(msg, kind); return; } catch (e) {} }
+    try { console.warn('[bell-v143]', msg); } catch (e) {}
+}
+function _doMarkAll(){
+    var cnt = document.getElementById('trkBellCount');
+    var prevCnt = cnt ? cnt.textContent : '';
+    var prevDisplay = cnt ? cnt.style.display : '';
+    if (cnt) { cnt.style.display = 'none'; cnt.textContent = '0'; }
+    var drop = document.getElementById('trkBellDrop');
+    var prevHtml = drop ? drop.innerHTML : '';
+    if (drop) drop.innerHTML = '<div class="trk-bell-head">Уведомления</div><div class="trk-bell-empty">Нет уведомлений</div>';
+    var hdrs = {'Content-Type': 'application/json'};
+    var csrf = _getCsrf();
+    if (csrf) hdrs['X-CSRF-Token'] = csrf;
+    try { console.log('[bell-v143] POST /api/notifications/read, CSRF=' + (csrf ? 'ok' : 'MISSING')); } catch (e) {}
+    fetch('/api/notifications/read', {
+        method: 'POST', headers: hdrs, credentials: 'same-origin',
+        body: JSON.stringify({}),
+    }).then(function(r){
+        try { console.log('[bell-v143] HTTP ' + (r ? r.status : '?')); } catch (e) {}
+        if (!r || !r.ok) throw new Error('HTTP ' + (r ? r.status : '?'));
+        return r.json();
+    }).then(function(d){
+        try { console.log('[bell-v143] response:', d); } catch (e) {}
+        if (!d || !d.success) throw new Error((d && d.error) || 'Ошибка');
+        if (typeof window.__trkRefreshBell === 'function') { try { window.__trkRefreshBell(); } catch (e) {} }
+    }).catch(function(err){
+        try { console.error('[bell-v143] failed:', err); } catch (e) {}
+        if (cnt) { cnt.textContent = prevCnt; cnt.style.display = prevDisplay || ''; }
+        if (drop) drop.innerHTML = prevHtml;
+        _notifyMsg('❌ Не удалось пометить прочитанными: ' + ((err && err.message) || 'Ошибка'), 'error');
+    });
+}
+function _hook(btn){
+    if (!btn || btn._v143hooked) return;
+    btn._v143hooked = true;
+    btn.addEventListener('click', function(e){
+        e.preventDefault();
+        e.stopPropagation();
+        if (e.stopImmediatePropagation) e.stopImmediatePropagation();
+        _doMarkAll();
+    }, true);
+    try { console.log('[bell-v143] hooked #trkBellMarkAll'); } catch (e) {}
+}
+function _scan(){
+    var btn = document.getElementById('trkBellMarkAll');
+    if (btn) _hook(btn);
+}
+if (document.readyState === 'loading') { document.addEventListener('DOMContentLoaded', _scan); } else { _scan(); }
+setTimeout(_scan, 500); setTimeout(_scan, 1500); setTimeout(_scan, 3000);
+try {
+    var _obs = new MutationObserver(function(){ _scan(); });
+    var _root = document.body || document.documentElement;
+    if (_root) _obs.observe(_root, {childList: true, subtree: true});
+} catch (e) { console.error('[bell-v143] observer:', e); }
 })();
