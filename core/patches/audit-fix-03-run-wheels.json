@@ -1,0 +1,14 @@
+{
+  "id": "audit-fix-03-run-wheels",
+  "description": "run.py: корректная проверка совместимости wheel-тегов (было: 'any' → 'cp3' not in tag)",
+  "target_version": "1.0.0",
+  "requires": [],
+  "operations": [
+    {
+      "type": "replace",
+      "path": "run.py",
+      "find": "    import zipfile\n    for whl in sorted(wheels_dir.glob('*.whl')):\n        tag = whl.stem.split('-')[-1]\n        cur_tag = f'cp{sys.version_info.major}{sys.version_info.minor}-cp{sys.version_info.major}{sys.version_info.minor}'\n        if 'cp3' in tag and cur_tag not in tag and 'py3-none-any' not in tag and 'py2.py3-none-any' not in tag:\n            continue  # wheel под другую версию/платформу",
+      "content": "    import zipfile\n    # audit-fix: старая проверка брала последний сегмент ('any'), из-за чего\n    # 'cp3' в tag никогда не срабатывал → могли ставиться несовместимые wheel.\n    OK_TAGS = ('py3', 'py313', 'cp313', 'py2.py3', 'cp39', 'cp310', 'cp311', 'cp312')\n    def _wheel_tag_ok(fname):\n        segs = fname[:-4].split('-')\n        tags = segs[-3:] if len(segs) >= 4 else segs[-2:]\n        joined = '.'.join(tags)\n        if 'any' in joined:\n            return True\n        return any(t in joined for t in OK_TAGS)\n\n    for whl in sorted(wheels_dir.glob('*.whl')):\n        if not _wheel_tag_ok(whl.name):\n            print(f'[setup]   [SKIP] {whl.name} — не подходит для Python '\n                  f'{sys.version_info.major}.{sys.version_info.minor}')\n            continue"
+    }
+  ]
+}

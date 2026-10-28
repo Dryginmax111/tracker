@@ -1,0 +1,20 @@
+{
+  "id": "audit-fix-01-patcher-keys",
+  "description": "patcher.py: поддержка алиасов ops/op (совместимость с make_patches.py)",
+  "target_version": "1.0.0",
+  "requires": [],
+  "operations": [
+    {
+      "type": "replace",
+      "path": "patcher.py",
+      "find": "    ops = patch.get('operations') or []\n    if not isinstance(ops, list) or not ops:\n        print('  (нет операций)')\n        return True, []",
+      "content": "    # audit-fix: патчи из make_patches.py хранят массив в 'ops',\n    # а операции — в 'op'. Поддерживаем оба формата.\n    ops = patch.get('operations')\n    if ops is None:\n        ops = patch.get('ops')\n    if not isinstance(ops, list) or not ops:\n        print('  (нет операций)')\n        return True, []"
+    },
+    {
+      "type": "replace",
+      "path": "patcher.py",
+      "find": "        t = op.get('type', '?')",
+      "content": "        t = op.get('type') or op.get('op') or '?'"
+    }
+  ]
+}

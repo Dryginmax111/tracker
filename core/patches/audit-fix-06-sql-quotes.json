@@ -1,0 +1,26 @@
+{
+  "id": "audit-fix-06-sql-quotes",
+  "description": "app.py: одинарные кавычки в SQL вместо двойных (переносимость на PostgreSQL/MySQL)",
+  "target_version": "1.0.0",
+  "requires": [],
+  "operations": [
+    {
+      "type": "replace",
+      "path": "app.py",
+      "find": "            db.exec(\n                'UPDATE notifications SET status=\"confirmed\", read_at=? WHERE id=?',\n                (now, nid),\n            )",
+      "content": "            db.exec(\n                \"UPDATE notifications SET status='confirmed', read_at=? WHERE id=?\",\n                (now, nid),\n            )"
+    },
+    {
+      "type": "replace",
+      "path": "app.py",
+      "find": "        _last = db.query_one(\n            'SELECT id FROM work_logs WHERE task_id=? AND employee_id=? AND status=\"done\" ORDER BY date DESC, id DESC LIMIT 1',\n            (tid, emp_id),\n        )\n        if _last:\n            db.exec('UPDATE work_logs SET status=\"in_progress\" WHERE id=?', (_last['id'],))",
+      "content": "        _last = db.query_one(\n            \"SELECT id FROM work_logs WHERE task_id=? AND employee_id=? AND status='done' ORDER BY date DESC, id DESC LIMIT 1\",\n            (tid, emp_id),\n        )\n        if _last:\n            db.exec(\"UPDATE work_logs SET status='in_progress' WHERE id=?\", (_last['id'],))"
+    },
+    {
+      "type": "replace",
+      "path": "app.py",
+      "find": "        db.exec(\n            'UPDATE notifications SET status=\"rejected\", read_at=? WHERE id=?',\n            (now, nid),\n        )",
+      "content": "        db.exec(\n            \"UPDATE notifications SET status='rejected', read_at=? WHERE id=?\",\n            (now, nid),\n        )"
+    }
+  ]
+}

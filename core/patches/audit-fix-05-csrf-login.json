@@ -1,0 +1,20 @@
+{
+  "id": "audit-fix-05-csrf-login",
+  "description": "CSRF на POST /login + скрытое поле токена в login.html (защита от login-CSRF)",
+  "target_version": "1.0.0",
+  "requires": ["audit-fix-04-session-permanent"],
+  "operations": [
+    {
+      "type": "replace",
+      "path": "app.py",
+      "find": "        # PATCH v1.0.6: CSRF также на /logout\n        _need_csrf = (\n            request.path.startswith('/api/') or request.path == '/logout'\n        )\n        if _need_csrf and request.method not in ('GET', 'HEAD', 'OPTIONS'):\n            if not check_csrf():\n                return jsonify({'success': False, 'error': 'csrf'}), 400\n        return None",
+      "content": "        # PATCH v1.0.6 + audit-fix: CSRF также на /logout и POST /login.\n        # Раньше /login не защищался — возможна login-CSRF-атака.\n        _need_csrf = (\n            request.path.startswith('/api/')\n            or request.path in ('/logout', '/login')\n        )\n        if _need_csrf and request.method not in ('GET', 'HEAD', 'OPTIONS'):\n            if not check_csrf():\n                if request.path.startswith('/api/'):\n                    return jsonify({'success': False, 'error': 'csrf'}), 400\n                return redirect(url_for('login_page'))\n        return None"
+    },
+    {
+      "type": "replace",
+      "path": "tamplates/login.html",
+      "find": "    <form method=\"post\" action=\"{{ url_for('login_page') }}\" autocomplete=\"off\">",
+      "content": "    <form method=\"post\" action=\"{{ url_for('login_page') }}\" autocomplete=\"off\">\n        {# audit-fix: скрытый CSRF — POST /login теперь защищён #}\n        <input type=\"hidden\" name=\"csrf_token\" value=\"{{ csrf_token }}\">"
+    }
+  ]
+}
