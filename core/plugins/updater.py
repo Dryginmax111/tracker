@@ -1659,7 +1659,8 @@ def register(app, db, hooks):
         except Exception as e:
             print(f'[updater] staging cleanup failed: {e}')
 
-    def _cleanup_backups(keep=20):
+    def _cleanup_backups(keep=500):
+        # v1.0.6: keep=500 по умолчанию. Раньше 20 — bundle (40+ ops) терял половину бэкапов.
         try:
             bdir = PROJECT_DIR / 'patch_backups'
             if not bdir.exists():
@@ -1830,12 +1831,13 @@ def register(app, db, hooks):
             except Exception as e:
                 print(f'[updater] audit failed: {e}')
 
-            # PATCH v1.0.6: подчищаем staging и старые бэкапы после apply.
+            # v1.0.6: НЕ удаляем бэкапы после apply. Раньше cleanup(keep=20) при
+            # bundle с 40 ops убивал 20 старейших бэкапов → откат падал с 'нет бэкапа'.
+            # Теперь чистится только вручную: /api/plugins/updater/cleanup_backups
             try:
                 _cleanup_staging(keep=10)
-                _cleanup_backups(keep=20)
             except Exception as _e_cl:
-                print(f'[updater] cleanup after apply failed: {_e_cl}')
+                print(f'[updater] staging cleanup failed: {_e_cl}')
             return jsonify({
                 'success': True,
                 'applied_count': len(pending),
@@ -2010,12 +2012,12 @@ def register(app, db, hooks):
             except Exception as e:
                 print(f'[updater] audit failed: {e}')
 
-            # PATCH v1.0.6: подчищаем staging и старые бэкапы после rollback.
+            # v1.0.6: не трогаем бэкапы после rollback — они могут понадобиться
+            # при повторном apply/rollback других патчей.
             try:
                 _cleanup_staging(keep=10)
-                _cleanup_backups(keep=20)
             except Exception as _e_cl:
-                print(f'[updater] cleanup after rollback failed: {_e_cl}')
+                print(f'[updater] staging cleanup failed: {_e_cl}')
             return jsonify({
                 'success': True,
                 'rolled_back': pid,
