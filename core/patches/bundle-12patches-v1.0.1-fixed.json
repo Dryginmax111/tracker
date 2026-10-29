@@ -1,6 +1,6 @@
 {
-  "id": "bundle-12patches-v1.0.1",
-  "description": "Bundle from 12 verified patches: audit-fix-01-patcher-keys, audit-fix-02-make-patches-keys-v2, audit-fix-03-run-wheels-v3, audit-fix-04-session-permanent, audit-fix-05-csrf-login, audit-fix-06-sql-quotes, audit-fix-07-task-save-dups, audit-fix-bundle-08-16, v1.0.2-big-fixes, v1.0.3-big-bundle-v2, v1.0.4-persistent-sessions, v1.0.5-remove-dup-weekly-link",
+  "id": "bundle-12patches-v1.0.1-fixed",
+  "description": "Bundle from 12 verified patches: audit-fix-01-patcher-keys, audit-fix-02-make-patches-keys-v2, audit-fix-03-run-wheels-v3, audit-fix-04-session-perman || FIXED: все non-write ops optional; +v1.0.6-rollback-fix (updater keep=500, без cleanup после apply/rollback, patcher сообщения)",
   "target_version": "1.0.1",
   "requires": [],
   "_applied_after": [
@@ -22,13 +22,15 @@
       "type": "replace",
       "path": "patcher.py",
       "find": "    ops = patch.get('operations') or []\n    if not isinstance(ops, list) or not ops:\n        print('  (нет операций)')\n        return True, []",
-      "content": "    # audit-fix: патчи из make_patches.py хранят массив в 'ops',\n    # а операции — в 'op'. Поддерживаем оба формата.\n    ops = patch.get('operations')\n    if ops is None:\n        ops = patch.get('ops')\n    if not isinstance(ops, list) or not ops:\n        print('  (нет операций)')\n        return True, []"
+      "content": "    # audit-fix: патчи из make_patches.py хранят массив в 'ops',\n    # а операции — в 'op'. Поддерживаем оба формата.\n    ops = patch.get('operations')\n    if ops is None:\n        ops = patch.get('ops')\n    if not isinstance(ops, list) or not ops:\n        print('  (нет операций)')\n        return True, []",
+      "optional": true
     },
     {
       "type": "replace",
       "path": "patcher.py",
       "find": "        t = op.get('type', '?')",
-      "content": "        t = op.get('type') or op.get('op') or '?'"
+      "content": "        t = op.get('type') or op.get('op') or '?'",
+      "optional": true
     },
     {
       "type": "regex",
@@ -64,103 +66,120 @@
       "type": "replace",
       "path": "auth.py",
       "find": "def login_user(uid):\n    session['uid'] = uid\n    session['csrf'] = secrets.token_urlsafe(32)",
-      "content": "def login_user(uid):\n    # audit-fix: без session.permanent Flask игнорирует PERMANENT_SESSION_LIFETIME\n    # (14 дней в config.json) и сессия живёт до закрытия браузера.\n    session.permanent = True\n    session['uid'] = uid\n    session['csrf'] = secrets.token_urlsafe(32)"
+      "content": "def login_user(uid):\n    # audit-fix: без session.permanent Flask игнорирует PERMANENT_SESSION_LIFETIME\n    # (14 дней в config.json) и сессия живёт до закрытия браузера.\n    session.permanent = True\n    session['uid'] = uid\n    session['csrf'] = secrets.token_urlsafe(32)",
+      "optional": true
     },
     {
       "type": "replace",
       "path": "app.py",
       "find": "        # PATCH v1.0.6: CSRF также на /logout\n        _need_csrf = (\n            request.path.startswith('/api/') or request.path == '/logout'\n        )\n        if _need_csrf and request.method not in ('GET', 'HEAD', 'OPTIONS'):\n            if not check_csrf():\n                return jsonify({'success': False, 'error': 'csrf'}), 400\n        return None",
-      "content": "        # PATCH v1.0.6 + audit-fix: CSRF также на /logout и POST /login.\n        # Раньше /login не защищался — возможна login-CSRF-атака.\n        _need_csrf = (\n            request.path.startswith('/api/')\n            or request.path in ('/logout', '/login')\n        )\n        if _need_csrf and request.method not in ('GET', 'HEAD', 'OPTIONS'):\n            if not check_csrf():\n                if request.path.startswith('/api/'):\n                    return jsonify({'success': False, 'error': 'csrf'}), 400\n                return redirect(url_for('login_page'))\n        return None"
+      "content": "        # PATCH v1.0.6 + audit-fix: CSRF также на /logout и POST /login.\n        # Раньше /login не защищался — возможна login-CSRF-атака.\n        _need_csrf = (\n            request.path.startswith('/api/')\n            or request.path in ('/logout', '/login')\n        )\n        if _need_csrf and request.method not in ('GET', 'HEAD', 'OPTIONS'):\n            if not check_csrf():\n                if request.path.startswith('/api/'):\n                    return jsonify({'success': False, 'error': 'csrf'}), 400\n                return redirect(url_for('login_page'))\n        return None",
+      "optional": true
     },
     {
       "type": "replace",
       "path": "tamplates/login.html",
       "find": "    <form method=\"post\" action=\"{{ url_for('login_page') }}\" autocomplete=\"off\">",
-      "content": "    <form method=\"post\" action=\"{{ url_for('login_page') }}\" autocomplete=\"off\">\n        {# audit-fix: скрытый CSRF — POST /login теперь защищён #}\n        <input type=\"hidden\" name=\"csrf_token\" value=\"{{ csrf_token }}\">"
+      "content": "    <form method=\"post\" action=\"{{ url_for('login_page') }}\" autocomplete=\"off\">\n        {# audit-fix: скрытый CSRF — POST /login теперь защищён #}\n        <input type=\"hidden\" name=\"csrf_token\" value=\"{{ csrf_token }}\">",
+      "optional": true
     },
     {
       "type": "replace",
       "path": "app.py",
       "find": "            db.exec(\n                'UPDATE notifications SET status=\"confirmed\", read_at=? WHERE id=?',\n                (now, nid),\n            )",
-      "content": "            db.exec(\n                \"UPDATE notifications SET status='confirmed', read_at=? WHERE id=?\",\n                (now, nid),\n            )"
+      "content": "            db.exec(\n                \"UPDATE notifications SET status='confirmed', read_at=? WHERE id=?\",\n                (now, nid),\n            )",
+      "optional": true
     },
     {
       "type": "replace",
       "path": "app.py",
       "find": "        _last = db.query_one(\n            'SELECT id FROM work_logs WHERE task_id=? AND employee_id=? AND status=\"done\" ORDER BY date DESC, id DESC LIMIT 1',\n            (tid, emp_id),\n        )\n        if _last:\n            db.exec('UPDATE work_logs SET status=\"in_progress\" WHERE id=?', (_last['id'],))",
-      "content": "        _last = db.query_one(\n            \"SELECT id FROM work_logs WHERE task_id=? AND employee_id=? AND status='done' ORDER BY date DESC, id DESC LIMIT 1\",\n            (tid, emp_id),\n        )\n        if _last:\n            db.exec(\"UPDATE work_logs SET status='in_progress' WHERE id=?\", (_last['id'],))"
+      "content": "        _last = db.query_one(\n            \"SELECT id FROM work_logs WHERE task_id=? AND employee_id=? AND status='done' ORDER BY date DESC, id DESC LIMIT 1\",\n            (tid, emp_id),\n        )\n        if _last:\n            db.exec(\"UPDATE work_logs SET status='in_progress' WHERE id=?\", (_last['id'],))",
+      "optional": true
     },
     {
       "type": "replace",
       "path": "app.py",
       "find": "        db.exec(\n            'UPDATE notifications SET status=\"rejected\", read_at=? WHERE id=?',\n            (now, nid),\n        )",
-      "content": "        db.exec(\n            \"UPDATE notifications SET status='rejected', read_at=? WHERE id=?\",\n            (now, nid),\n        )"
+      "content": "        db.exec(\n            \"UPDATE notifications SET status='rejected', read_at=? WHERE id=?\",\n            (now, nid),\n        )",
+      "optional": true
     },
     {
       "type": "replace",
       "path": "app.py",
       "find": "        # PATCH 1.0.14/1.0.15: диалог при удалении исполнителей с отметками\n        _removed_assignees = set()\n        _removed_action = ''\n        if task_id:\n            try:\n                _old_a = {r.get('employee_id') for r in db.query(\n                    'SELECT employee_id FROM task_assignees WHERE task_id=?', (task_id,))}\n            except Exception:\n                _old_a = set()\n            _new_a = set(assignees or [])\n            _removed_assignees = {e for e in (_old_a - _new_a) if e}\n            _removed_action = str(body.get('removed_logs_action') or '').strip().lower()\n            if _removed_assignees:\n                _pl = ','.join('?' * len(_removed_assignees))\n                _logs = db.query(\n                    f'SELECT employee_id, COUNT(*) AS cnt, MIN(date) AS first_date, MAX(date) AS last_date '\n                    f'FROM work_logs WHERE task_id=? AND employee_id IN ({_pl}) '\n                    f'GROUP BY employee_id',\n                    (task_id, *list(_removed_assignees)),\n                )\n                if _logs and _removed_action not in ('delete', 'keep'):\n                    _info = []\n                    for _l in _logs:\n                        _emp = db.query_one('SELECT name FROM employees WHERE id=?', (_l['employee_id'],))\n                        _info.append({\n                            'employee_id': _l['employee_id'],\n                            'name': (_emp or {}).get('name', _l['employee_id']),\n                            'logs_count': _l['cnt'],\n                            'first_date': _l['first_date'],\n                            'last_date': _l['last_date'],\n                        })\n                    return jsonify({\n                        'success': False,\n                        'error': 'removed_assignees_have_logs',\n                        'removed': _info,\n                        'task_id': task_id,\n                        'message': 'У удаляемых сотрудников есть отметки по этой задаче',\n                    }), 409\n\n",
-      "content": ""
+      "content": "",
+      "optional": true
     },
     {
       "type": "replace",
       "path": "app.py",
       "find": "\n        # PATCH 1.0.14/1.0.15: удаление логов удалённых исполнителей\n        if task_id and _removed_assignees and _removed_action == 'delete':\n            try:\n                _pl2 = ','.join('?' * len(_removed_assignees))\n                db.exec(\n                    f'DELETE FROM work_logs WHERE task_id=? AND employee_id IN ({_pl2})',\n                    (task_id, *list(_removed_assignees)),\n                )\n                print(f'[task_save] removed logs of {len(_removed_assignees)} assignee(s) from task {task_id}')\n            except Exception as _e:\n                print(f'[task_save] delete removed logs failed: {_e}')\n",
-      "content": ""
+      "content": "",
+      "optional": true
     },
     {
       "type": "replace",
       "path": "patcher.py",
       "find": "        missing = [r for r in (patch.get('requires') or []) if r not in journal]\n        if missing and not args.dry:\n            print(f'{C.ERR}Требуются патчи: {\", \".join(missing)}{C.END}')\n            fail_n += 1\n            continue",
-      "content": "        missing = [r for r in (patch.get('requires') or []) if r not in journal]\n        if missing and not args.dry:\n            print(f'{C.ERR}Требуются патчи: {\", \".join(missing)}{C.END}')\n            fail_n += 1\n            # audit-fix: fail-fast. Если не выполнен requires, применять следующие\n            # патчи опасно: они могут рассчитывать на изменения от неприменённого\n            # патча (не только через requires, но и по общим файлам).\n            print(f'{C.WARN}Цепочка прервана: не выполнены requires патча «{pid}».{C.END}')\n            break"
+      "content": "        missing = [r for r in (patch.get('requires') or []) if r not in journal]\n        if missing and not args.dry:\n            print(f'{C.ERR}Требуются патчи: {\", \".join(missing)}{C.END}')\n            fail_n += 1\n            # audit-fix: fail-fast. Если не выполнен requires, применять следующие\n            # патчи опасно: они могут рассчитывать на изменения от неприменённого\n            # патча (не только через requires, но и по общим файлам).\n            print(f'{C.WARN}Цепочка прервана: не выполнены requires патча «{pid}».{C.END}')\n            break",
+      "optional": true
     },
     {
       "type": "replace",
       "path": "plugins/updater.py",
       "find": "        _skip_rsn = p.get('_skip_reason')\n        if _skip_rsn:\n            entry['warning'] = _skip_rsn\n            out.append(entry)\n            continue",
-      "content": "        _skip_rsn = p.get('_skip_reason')\n        if _skip_rsn:\n            # audit-fix: раньше entry['ok'] оставался True, патч попадал в apply\n            # и ломал приложение (requires_version не выполнен). Теперь явно\n            # блокируем: патч не пройдёт apply, пока не устранится причина.\n            entry['ok'] = False\n            entry['warning'] = _skip_rsn\n            entry['error'] = 'пропущен: ' + _skip_rsn\n            out.append(entry)\n            continue"
+      "content": "        _skip_rsn = p.get('_skip_reason')\n        if _skip_rsn:\n            # audit-fix: раньше entry['ok'] оставался True, патч попадал в apply\n            # и ломал приложение (requires_version не выполнен). Теперь явно\n            # блокируем: патч не пройдёт apply, пока не устранится причина.\n            entry['ok'] = False\n            entry['warning'] = _skip_rsn\n            entry['error'] = 'пропущен: ' + _skip_rsn\n            out.append(entry)\n            continue",
+      "optional": true
     },
     {
       "type": "replace",
       "path": "plugins/updater.py",
       "find": "            return jsonify({\n                'success': True,\n                'applied_count': len(pending),\n                'total_count': len(pending),\n                'new_version': new_v,\n                'output': apply_out,\n            })",
-      "content": "            # audit-fix: applied_count = сколько патчей реально попало в журнал,\n            # а не сколько лежало в pending. patcher.py мог пропустить часть\n            # (например, уже применённые при --force).\n            return jsonify({\n                'success': True,\n                'applied_count': len(applied_now) or len(pending),\n                'total_count': len(pending),\n                'new_version': new_v,\n                'output': apply_out,\n            })"
+      "content": "            # audit-fix: applied_count = сколько патчей реально попало в журнал,\n            # а не сколько лежало в pending. patcher.py мог пропустить часть\n            # (например, уже применённые при --force).\n            return jsonify({\n                'success': True,\n                'applied_count': len(applied_now) or len(pending),\n                'total_count': len(pending),\n                'new_version': new_v,\n                'output': apply_out,\n            })",
+      "optional": true
     },
     {
       "type": "replace",
       "path": "app.py",
       "find": "        elif log_days > 3650:\n            log_days = 3650",
-      "content": "        elif log_days > 730:\n            # audit-fix: 3650 дней (10 лет) на каждый запрос state читали\n            # всю таблицу work_logs в память и делали deepcopy → OOM при\n            # 50k+ логов. Реально нужны 30-180 дней для календаря; 730 (2 года)\n            # — щедрый запас по памяти.\n            log_days = 730"
+      "content": "        elif log_days > 730:\n            # audit-fix: 3650 дней (10 лет) на каждый запрос state читали\n            # всю таблицу work_logs в память и делали deepcopy → OOM при\n            # 50k+ логов. Реально нужны 30-180 дней для календаря; 730 (2 года)\n            # — щедрый запас по памяти.\n            log_days = 730",
+      "optional": true
     },
     {
       "type": "replace",
       "path": "auth.py",
       "find": "# PATCH v2: алиасы для совместимости — если где-то остался старый вызов,\n# он не упадёт. Постепенно можно удалить.\nhash_password = hash_password\nverify_password = verify_password",
-      "content": "# audit-fix: no-op self-alias'ы удалены. Если где-то остался старый вызов — grep по проекту."
+      "content": "# audit-fix: no-op self-alias'ы удалены. Если где-то остался старый вызов — grep по проекту.",
+      "optional": true
     },
     {
       "type": "replace",
       "path": "auth.py",
       "find": "\n\n# PATCH v1.0.28: g должен быть доступен в login_required — импорт на уровне модуля\nfrom flask import g as _flask_g  # noqa: E402\n",
-      "content": "\n\n# audit-fix: дублирующий импорт g удалён — g уже импортирован в начале файла.\n"
+      "content": "\n\n# audit-fix: дублирующий импорт g удалён — g уже импортирован в начале файла.\n",
+      "optional": true
     },
     {
       "type": "replace",
       "path": "plugins/updater.py",
       "find": "            st['_diag_ok'] = True\n            st['_diag_journal_len'] = len(journal)\n            st['journal_corrupt'] = _journal_corrupt",
-      "content": "            # audit-fix: _diag_* не нужны в публичном ответе — оставлены только в /_diag.\n            st['journal_corrupt'] = _journal_corrupt"
+      "content": "            # audit-fix: _diag_* не нужны в публичном ответе — оставлены только в /_diag.\n            st['journal_corrupt'] = _journal_corrupt",
+      "optional": true
     },
     {
       "type": "replace",
       "path": "requirements.txt",
       "find": "openpyxl>3.1",
-      "content": "openpyxl>=3.1"
+      "content": "openpyxl>=3.1",
+      "optional": true
     },
     {
       "type": "replace",
       "path": "app.py",
       "find": "        'total_added': 0,\n    }\n    pass\n    t = db.query_one('SELECT * FROM tasks WHERE id=?', (task_id,))",
-      "content": "        'total_added': 0,\n    }\n    t = db.query_one('SELECT * FROM tasks WHERE id=?', (task_id,))"
+      "content": "        'total_added': 0,\n    }\n    t = db.query_one('SELECT * FROM tasks WHERE id=?', (task_id,))",
+      "optional": true
     },
     {
       "type": "regex",
