@@ -825,6 +825,7 @@ def rollback(pid: str, base: Path, journal: dict) -> bool:
             bak = base / ch['backup']
             if not bak.exists():
                 print(f'  {C.ERR}✗ нет бэкапа: {ch["backup"]}{C.END}')
+                print(f'    {C.DIM}файл {ch["path"]} остаётся в текущем состоянии{C.END}')
                 failed.append(ch['path'])
                 continue
             expected = (ch.get('sha_after') or '').strip()
@@ -845,7 +846,10 @@ def rollback(pid: str, base: Path, journal: dict) -> bool:
         print(f'  {C.WARN}⚠ Файлы правились после патча — правки затёрты откатом: '
               f'{", ".join(modified_after)}{C.END}')
     if failed:
-        print(f'  {C.ERR}✗ Не восстановлены файлы: {", ".join(failed)}{C.END}')
+        print(f'  {C.ERR}✗ Не восстановлены файлы ({len(failed)}): {", ".join(failed)}{C.END}')
+        print(f'  {C.WARN}⚠ Патч ОСТАЁТСЯ в журнале. Состояние системы — ЧАСТИЧНЫЙ откат.{C.END}')
+        print(f'  {C.WARN}⚠ Восстановите файлы вручную или из резервной копии,{C.END}')
+        print(f'  {C.WARN}  затем удалите запись «{pid}» из .patches_applied.json.{C.END}')
         return False
     return True
 
