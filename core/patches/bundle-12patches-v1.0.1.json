@@ -1,0 +1,489 @@
+{
+  "id": "bundle-12patches-v1.0.1",
+  "description": "Bundle from 12 verified patches: audit-fix-01-patcher-keys, audit-fix-02-make-patches-keys-v2, audit-fix-03-run-wheels-v3, audit-fix-04-session-permanent, audit-fix-05-csrf-login, audit-fix-06-sql-quotes, audit-fix-07-task-save-dups, audit-fix-bundle-08-16, v1.0.2-big-fixes, v1.0.3-big-bundle-v2, v1.0.4-persistent-sessions, v1.0.5-remove-dup-weekly-link",
+  "target_version": "1.0.1",
+  "requires": [],
+  "_applied_after": [
+    "audit-fix-01-patcher-keys",
+    "audit-fix-02-make-patches-keys-v2",
+    "audit-fix-03-run-wheels-v3",
+    "audit-fix-04-session-permanent",
+    "audit-fix-05-csrf-login",
+    "audit-fix-06-sql-quotes",
+    "audit-fix-07-task-save-dups",
+    "audit-fix-bundle-08-16",
+    "v1.0.2-big-fixes",
+    "v1.0.3-big-bundle-v2",
+    "v1.0.4-persistent-sessions",
+    "v1.0.5-remove-dup-weekly-link"
+  ],
+  "operations": [
+    {
+      "type": "replace",
+      "path": "patcher.py",
+      "find": "    ops = patch.get('operations') or []\n    if not isinstance(ops, list) or not ops:\n        print('  (нет операций)')\n        return True, []",
+      "content": "    # audit-fix: патчи из make_patches.py хранят массив в 'ops',\n    # а операции — в 'op'. Поддерживаем оба формата.\n    ops = patch.get('operations')\n    if ops is None:\n        ops = patch.get('ops')\n    if not isinstance(ops, list) or not ops:\n        print('  (нет операций)')\n        return True, []"
+    },
+    {
+      "type": "replace",
+      "path": "patcher.py",
+      "find": "        t = op.get('type', '?')",
+      "content": "        t = op.get('type') or op.get('op') or '?'"
+    },
+    {
+      "type": "regex",
+      "path": "make_patches.py",
+      "pattern": "(['\"])ops\\1(\\s*:\\s*)ops\\b",
+      "content": "\\1operations\\1\\2ops",
+      "optional": true
+    },
+    {
+      "type": "regex",
+      "path": "make_patches.py",
+      "pattern": "\\{\\s*(['\"])op\\1\\s*:",
+      "content": "{'type':",
+      "optional": true
+    },
+    {
+      "type": "insert",
+      "path": "run.py",
+      "marker": "    import zipfile",
+      "position": "after",
+      "content": "\n    def _wheel_tag_ok(fname):\n        segs = fname[:-4].split('-')\n        tags = segs[-3:] if len(segs) >= 4 else segs[-2:]\n        joined = '.'.join(tags)\n        if 'any' in joined:\n            return True\n        return any(t in joined for t in ('py3', 'py313', 'cp313', 'py2.py3', 'cp39', 'cp310', 'cp311', 'cp312'))\n",
+      "idempotent": true,
+      "optional": true
+    },
+    {
+      "type": "regex",
+      "path": "run.py",
+      "pattern": "        if 'cp3' in tag[\\s\\S]{0,300}?continue[^\\n]*",
+      "content": "        if not _wheel_tag_ok(whl.name):\n            print(f'[setup]   [SKIP] {whl.name} - ne podhodit dlya Python {sys.version_info.major}.{sys.version_info.minor}')\n            continue",
+      "optional": true
+    },
+    {
+      "type": "replace",
+      "path": "auth.py",
+      "find": "def login_user(uid):\n    session['uid'] = uid\n    session['csrf'] = secrets.token_urlsafe(32)",
+      "content": "def login_user(uid):\n    # audit-fix: без session.permanent Flask игнорирует PERMANENT_SESSION_LIFETIME\n    # (14 дней в config.json) и сессия живёт до закрытия браузера.\n    session.permanent = True\n    session['uid'] = uid\n    session['csrf'] = secrets.token_urlsafe(32)"
+    },
+    {
+      "type": "replace",
+      "path": "app.py",
+      "find": "        # PATCH v1.0.6: CSRF также на /logout\n        _need_csrf = (\n            request.path.startswith('/api/') or request.path == '/logout'\n        )\n        if _need_csrf and request.method not in ('GET', 'HEAD', 'OPTIONS'):\n            if not check_csrf():\n                return jsonify({'success': False, 'error': 'csrf'}), 400\n        return None",
+      "content": "        # PATCH v1.0.6 + audit-fix: CSRF также на /logout и POST /login.\n        # Раньше /login не защищался — возможна login-CSRF-атака.\n        _need_csrf = (\n            request.path.startswith('/api/')\n            or request.path in ('/logout', '/login')\n        )\n        if _need_csrf and request.method not in ('GET', 'HEAD', 'OPTIONS'):\n            if not check_csrf():\n                if request.path.startswith('/api/'):\n                    return jsonify({'success': False, 'error': 'csrf'}), 400\n                return redirect(url_for('login_page'))\n        return None"
+    },
+    {
+      "type": "replace",
+      "path": "tamplates/login.html",
+      "find": "    <form method=\"post\" action=\"{{ url_for('login_page') }}\" autocomplete=\"off\">",
+      "content": "    <form method=\"post\" action=\"{{ url_for('login_page') }}\" autocomplete=\"off\">\n        {# audit-fix: скрытый CSRF — POST /login теперь защищён #}\n        <input type=\"hidden\" name=\"csrf_token\" value=\"{{ csrf_token }}\">"
+    },
+    {
+      "type": "replace",
+      "path": "app.py",
+      "find": "            db.exec(\n                'UPDATE notifications SET status=\"confirmed\", read_at=? WHERE id=?',\n                (now, nid),\n            )",
+      "content": "            db.exec(\n                \"UPDATE notifications SET status='confirmed', read_at=? WHERE id=?\",\n                (now, nid),\n            )"
+    },
+    {
+      "type": "replace",
+      "path": "app.py",
+      "find": "        _last = db.query_one(\n            'SELECT id FROM work_logs WHERE task_id=? AND employee_id=? AND status=\"done\" ORDER BY date DESC, id DESC LIMIT 1',\n            (tid, emp_id),\n        )\n        if _last:\n            db.exec('UPDATE work_logs SET status=\"in_progress\" WHERE id=?', (_last['id'],))",
+      "content": "        _last = db.query_one(\n            \"SELECT id FROM work_logs WHERE task_id=? AND employee_id=? AND status='done' ORDER BY date DESC, id DESC LIMIT 1\",\n            (tid, emp_id),\n        )\n        if _last:\n            db.exec(\"UPDATE work_logs SET status='in_progress' WHERE id=?\", (_last['id'],))"
+    },
+    {
+      "type": "replace",
+      "path": "app.py",
+      "find": "        db.exec(\n            'UPDATE notifications SET status=\"rejected\", read_at=? WHERE id=?',\n            (now, nid),\n        )",
+      "content": "        db.exec(\n            \"UPDATE notifications SET status='rejected', read_at=? WHERE id=?\",\n            (now, nid),\n        )"
+    },
+    {
+      "type": "replace",
+      "path": "app.py",
+      "find": "        # PATCH 1.0.14/1.0.15: диалог при удалении исполнителей с отметками\n        _removed_assignees = set()\n        _removed_action = ''\n        if task_id:\n            try:\n                _old_a = {r.get('employee_id') for r in db.query(\n                    'SELECT employee_id FROM task_assignees WHERE task_id=?', (task_id,))}\n            except Exception:\n                _old_a = set()\n            _new_a = set(assignees or [])\n            _removed_assignees = {e for e in (_old_a - _new_a) if e}\n            _removed_action = str(body.get('removed_logs_action') or '').strip().lower()\n            if _removed_assignees:\n                _pl = ','.join('?' * len(_removed_assignees))\n                _logs = db.query(\n                    f'SELECT employee_id, COUNT(*) AS cnt, MIN(date) AS first_date, MAX(date) AS last_date '\n                    f'FROM work_logs WHERE task_id=? AND employee_id IN ({_pl}) '\n                    f'GROUP BY employee_id',\n                    (task_id, *list(_removed_assignees)),\n                )\n                if _logs and _removed_action not in ('delete', 'keep'):\n                    _info = []\n                    for _l in _logs:\n                        _emp = db.query_one('SELECT name FROM employees WHERE id=?', (_l['employee_id'],))\n                        _info.append({\n                            'employee_id': _l['employee_id'],\n                            'name': (_emp or {}).get('name', _l['employee_id']),\n                            'logs_count': _l['cnt'],\n                            'first_date': _l['first_date'],\n                            'last_date': _l['last_date'],\n                        })\n                    return jsonify({\n                        'success': False,\n                        'error': 'removed_assignees_have_logs',\n                        'removed': _info,\n                        'task_id': task_id,\n                        'message': 'У удаляемых сотрудников есть отметки по этой задаче',\n                    }), 409\n\n",
+      "content": ""
+    },
+    {
+      "type": "replace",
+      "path": "app.py",
+      "find": "\n        # PATCH 1.0.14/1.0.15: удаление логов удалённых исполнителей\n        if task_id and _removed_assignees and _removed_action == 'delete':\n            try:\n                _pl2 = ','.join('?' * len(_removed_assignees))\n                db.exec(\n                    f'DELETE FROM work_logs WHERE task_id=? AND employee_id IN ({_pl2})',\n                    (task_id, *list(_removed_assignees)),\n                )\n                print(f'[task_save] removed logs of {len(_removed_assignees)} assignee(s) from task {task_id}')\n            except Exception as _e:\n                print(f'[task_save] delete removed logs failed: {_e}')\n",
+      "content": ""
+    },
+    {
+      "type": "replace",
+      "path": "patcher.py",
+      "find": "        missing = [r for r in (patch.get('requires') or []) if r not in journal]\n        if missing and not args.dry:\n            print(f'{C.ERR}Требуются патчи: {\", \".join(missing)}{C.END}')\n            fail_n += 1\n            continue",
+      "content": "        missing = [r for r in (patch.get('requires') or []) if r not in journal]\n        if missing and not args.dry:\n            print(f'{C.ERR}Требуются патчи: {\", \".join(missing)}{C.END}')\n            fail_n += 1\n            # audit-fix: fail-fast. Если не выполнен requires, применять следующие\n            # патчи опасно: они могут рассчитывать на изменения от неприменённого\n            # патча (не только через requires, но и по общим файлам).\n            print(f'{C.WARN}Цепочка прервана: не выполнены requires патча «{pid}».{C.END}')\n            break"
+    },
+    {
+      "type": "replace",
+      "path": "plugins/updater.py",
+      "find": "        _skip_rsn = p.get('_skip_reason')\n        if _skip_rsn:\n            entry['warning'] = _skip_rsn\n            out.append(entry)\n            continue",
+      "content": "        _skip_rsn = p.get('_skip_reason')\n        if _skip_rsn:\n            # audit-fix: раньше entry['ok'] оставался True, патч попадал в apply\n            # и ломал приложение (requires_version не выполнен). Теперь явно\n            # блокируем: патч не пройдёт apply, пока не устранится причина.\n            entry['ok'] = False\n            entry['warning'] = _skip_rsn\n            entry['error'] = 'пропущен: ' + _skip_rsn\n            out.append(entry)\n            continue"
+    },
+    {
+      "type": "replace",
+      "path": "plugins/updater.py",
+      "find": "            return jsonify({\n                'success': True,\n                'applied_count': len(pending),\n                'total_count': len(pending),\n                'new_version': new_v,\n                'output': apply_out,\n            })",
+      "content": "            # audit-fix: applied_count = сколько патчей реально попало в журнал,\n            # а не сколько лежало в pending. patcher.py мог пропустить часть\n            # (например, уже применённые при --force).\n            return jsonify({\n                'success': True,\n                'applied_count': len(applied_now) or len(pending),\n                'total_count': len(pending),\n                'new_version': new_v,\n                'output': apply_out,\n            })"
+    },
+    {
+      "type": "replace",
+      "path": "app.py",
+      "find": "        elif log_days > 3650:\n            log_days = 3650",
+      "content": "        elif log_days > 730:\n            # audit-fix: 3650 дней (10 лет) на каждый запрос state читали\n            # всю таблицу work_logs в память и делали deepcopy → OOM при\n            # 50k+ логов. Реально нужны 30-180 дней для календаря; 730 (2 года)\n            # — щедрый запас по памяти.\n            log_days = 730"
+    },
+    {
+      "type": "replace",
+      "path": "auth.py",
+      "find": "# PATCH v2: алиасы для совместимости — если где-то остался старый вызов,\n# он не упадёт. Постепенно можно удалить.\nhash_password = hash_password\nverify_password = verify_password",
+      "content": "# audit-fix: no-op self-alias'ы удалены. Если где-то остался старый вызов — grep по проекту."
+    },
+    {
+      "type": "replace",
+      "path": "auth.py",
+      "find": "\n\n# PATCH v1.0.28: g должен быть доступен в login_required — импорт на уровне модуля\nfrom flask import g as _flask_g  # noqa: E402\n",
+      "content": "\n\n# audit-fix: дублирующий импорт g удалён — g уже импортирован в начале файла.\n"
+    },
+    {
+      "type": "replace",
+      "path": "plugins/updater.py",
+      "find": "            st['_diag_ok'] = True\n            st['_diag_journal_len'] = len(journal)\n            st['journal_corrupt'] = _journal_corrupt",
+      "content": "            # audit-fix: _diag_* не нужны в публичном ответе — оставлены только в /_diag.\n            st['journal_corrupt'] = _journal_corrupt"
+    },
+    {
+      "type": "replace",
+      "path": "requirements.txt",
+      "find": "openpyxl>3.1",
+      "content": "openpyxl>=3.1"
+    },
+    {
+      "type": "replace",
+      "path": "app.py",
+      "find": "        'total_added': 0,\n    }\n    pass\n    t = db.query_one('SELECT * FROM tasks WHERE id=?', (task_id,))",
+      "content": "        'total_added': 0,\n    }\n    t = db.query_one('SELECT * FROM tasks WHERE id=?', (task_id,))"
+    },
+    {
+      "type": "regex",
+      "path": "client_version.json",
+      "pattern": "\"version\"\\s*:\\s*\"1\\.0\\.[01]\"",
+      "content": "\"version\": \"1.0.2\"",
+      "optional": true
+    },
+    {
+      "type": "replace",
+      "path": "patcher.py",
+      "find": "    ops = patch.get('operations') or []\n    if not isinstance(ops, list) or not ops:\n        print('  (нет операций)')\n        return True, []",
+      "content": "    ops = patch.get('operations')\n    if ops is None:\n        ops = patch.get('ops')\n    if not isinstance(ops, list) or not ops:\n        print('  (нет операций)')\n        return True, []",
+      "optional": true
+    },
+    {
+      "type": "replace",
+      "path": "patcher.py",
+      "find": "        t = op.get('type', '?')",
+      "content": "        t = op.get('type') or op.get('op') or '?'",
+      "optional": true
+    },
+    {
+      "type": "replace",
+      "path": "patcher.py",
+      "find": "        missing = [r for r in (patch.get('requires') or []) if r not in journal]\n        if missing and not args.dry:\n            print(f'{C.ERR}Требуются патчи: {\", \".join(missing)}{C.END}')\n            fail_n += 1\n            continue",
+      "content": "        missing = [r for r in (patch.get('requires') or []) if r not in journal]\n        if missing and not args.dry:\n            print(f'{C.ERR}Требуются патчи: {\", \".join(missing)}{C.END}')\n            fail_n += 1\n            print(f'{C.WARN}Цепочка прервана: не выполнены requires патча «{pid}».{C.END}')\n            break",
+      "optional": true
+    },
+    {
+      "type": "replace",
+      "path": "make_patches.py",
+      "find": "    p = {'id': pid, 'description': desc, 'target_version': target,\n         'requires': requires, 'ops': ops}",
+      "content": "    p = {'id': pid, 'description': desc, 'target_version': target,\n         'requires': requires, 'operations': ops}",
+      "optional": true
+    },
+    {
+      "type": "regex",
+      "path": "make_patches.py",
+      "pattern": "\\{'op': '",
+      "content": "{'type': '",
+      "optional": true
+    },
+    {
+      "type": "replace",
+      "path": "run.py",
+      "find": "    import zipfile\n    for whl in sorted(wheels_dir.glob('*.whl')):\n        tag = whl.stem.split('-')[-1]\n        cur_tag = f'cp{sys.version_info.major}{sys.version_info.minor}-cp{sys.version_info.major}{sys.version_info.minor}'\n        if 'cp3' in tag and cur_tag not in tag and 'py3-none-any' not in tag and 'py2.py3-none-any' not in tag:\n            continue  # wheel под другую версию/платформу",
+      "content": "    import zipfile\n    OK_TAGS = ('py3', 'py313', 'cp313', 'py2.py3', 'cp39', 'cp310', 'cp311', 'cp312')\n    def _wheel_tag_ok(fname):\n        segs = fname[:-4].split('-')\n        tags = segs[-3:] if len(segs) >= 4 else segs[-2:]\n        joined = '.'.join(tags)\n        if 'any' in joined:\n            return True\n        return any(t in joined for t in OK_TAGS)\n\n    for whl in sorted(wheels_dir.glob('*.whl')):\n        if not _wheel_tag_ok(whl.name):\n            print(f'[setup]   [SKIP] {whl.name} — не подходит для Python '\n                  f'{sys.version_info.major}.{sys.version_info.minor}')\n            continue",
+      "optional": true
+    },
+    {
+      "type": "replace",
+      "path": "auth.py",
+      "find": "def login_user(uid):\n    session['uid'] = uid\n    session['csrf'] = secrets.token_urlsafe(32)",
+      "content": "def login_user(uid):\n    session.permanent = True\n    session['uid'] = uid\n    session['csrf'] = secrets.token_urlsafe(32)",
+      "optional": true
+    },
+    {
+      "type": "replace",
+      "path": "auth.py",
+      "find": "# PATCH v2: алиасы для совместимости — если где-то остался старый вызов,\n# он не упадёт. Постепенно можно удалить.\nhash_password = hash_password\nverify_password = verify_password",
+      "content": "# v1.0.2: no-op self-alias'ы удалены.",
+      "optional": true
+    },
+    {
+      "type": "replace",
+      "path": "auth.py",
+      "find": "\n\n# PATCH v1.0.28: g должен быть доступен в login_required — импорт на уровне модуля\nfrom flask import g as _flask_g  # noqa: E402\n",
+      "content": "\n\n# v1.0.2: дублирующий импорт g удалён.\n",
+      "optional": true
+    },
+    {
+      "type": "replace",
+      "path": "app.py",
+      "find": "    app.secret_key = cfg.get('secret_key') or secrets.token_urlsafe(48)\n    app.config['SESSION_COOKIE_HTTPONLY'] = True",
+      "content": "    _sk = (cfg.get('secret_key') or '').strip()\n    if not _sk or _sk == '...':\n        _sk = secrets.token_urlsafe(48)\n        print('=' * 60)\n        print('[INIT] secret_key не задан или placeholder — сгенерирован новый.')\n        print(f'[INIT] Запишите в config.json: \"secret_key\": \"{_sk}\"')\n        print('=' * 60)\n    app.secret_key = _sk\n    app.config['SESSION_COOKIE_HTTPONLY'] = True",
+      "optional": true
+    },
+    {
+      "type": "replace",
+      "path": "app.py",
+      "find": "    if _has_tmpl and (BASE_DIR / 'tamplates').is_dir():\n        from jinja2 import ChoiceLoader, FileSystemLoader\n        app.jinja_loader = ChoiceLoader([\n            FileSystemLoader(os.path.join(_core_dir, 'templates')),\n            FileSystemLoader(os.path.join(_core_dir, 'tamplates')),\n        ])",
+      "content": "    if _has_tmpl and (BASE_DIR / 'tamplates').is_dir():\n        print('=' * 60)\n        print('[WARN] Оба каталога шаблонов существуют: templates/ и tamplates/.')\n        print('[WARN] Приоритет — templates/. Правки в tamplates/ ИГНОРИРУЮТСЯ.')\n        print('[WARN] Удалите или переименуйте один из них.')\n        print('=' * 60)\n        from jinja2 import ChoiceLoader, FileSystemLoader\n        app.jinja_loader = ChoiceLoader([\n            FileSystemLoader(os.path.join(_core_dir, 'templates')),\n            FileSystemLoader(os.path.join(_core_dir, 'tamplates')),\n        ])",
+      "optional": true
+    },
+    {
+      "type": "replace",
+      "path": "app.py",
+      "find": "        # PATCH v1.0.6: CSRF также на /logout\n        _need_csrf = (\n            request.path.startswith('/api/') or request.path == '/logout'\n        )\n        if _need_csrf and request.method not in ('GET', 'HEAD', 'OPTIONS'):\n            if not check_csrf():\n                return jsonify({'success': False, 'error': 'csrf'}), 400\n        return None",
+      "content": "        _need_csrf = (\n            request.path.startswith('/api/')\n            or request.path in ('/logout', '/login')\n        )\n        if _need_csrf and request.method not in ('GET', 'HEAD', 'OPTIONS'):\n            if not check_csrf():\n                if request.path.startswith('/api/'):\n                    return jsonify({'success': False, 'error': 'csrf'}), 400\n                return redirect(url_for('login_page'))\n        return None",
+      "optional": true
+    },
+    {
+      "type": "replace",
+      "path": "tamplates/login.html",
+      "find": "    <form method=\"post\" action=\"{{ url_for('login_page') }}\" autocomplete=\"off\">",
+      "content": "    <form method=\"post\" action=\"{{ url_for('login_page') }}\" autocomplete=\"off\">\n        <input type=\"hidden\" name=\"csrf_token\" value=\"{{ csrf_token }}\">",
+      "optional": true
+    },
+    {
+      "type": "replace",
+      "path": "app.py",
+      "find": "            db.exec(\n                'UPDATE notifications SET status=\"confirmed\", read_at=? WHERE id=?',\n                (now, nid),\n            )",
+      "content": "            db.exec(\n                \"UPDATE notifications SET status='confirmed', read_at=? WHERE id=?\",\n                (now, nid),\n            )",
+      "optional": true
+    },
+    {
+      "type": "replace",
+      "path": "app.py",
+      "find": "        _last = db.query_one(\n            'SELECT id FROM work_logs WHERE task_id=? AND employee_id=? AND status=\"done\" ORDER BY date DESC, id DESC LIMIT 1',\n            (tid, emp_id),\n        )\n        if _last:\n            db.exec('UPDATE work_logs SET status=\"in_progress\" WHERE id=?', (_last['id'],))",
+      "content": "        _last = db.query_one(\n            \"SELECT id FROM work_logs WHERE task_id=? AND employee_id=? AND status='done' ORDER BY date DESC, id DESC LIMIT 1\",\n            (tid, emp_id),\n        )\n        if _last:\n            db.exec(\"UPDATE work_logs SET status='in_progress' WHERE id=?\", (_last['id'],))",
+      "optional": true
+    },
+    {
+      "type": "replace",
+      "path": "app.py",
+      "find": "        db.exec(\n            'UPDATE notifications SET status=\"rejected\", read_at=? WHERE id=?',\n            (now, nid),\n        )",
+      "content": "        db.exec(\n            \"UPDATE notifications SET status='rejected', read_at=? WHERE id=?\",\n            (now, nid),\n        )",
+      "optional": true
+    },
+    {
+      "type": "replace",
+      "path": "app.py",
+      "find": "        # PATCH 1.0.14/1.0.15: диалог при удалении исполнителей с отметками\n        _removed_assignees = set()\n        _removed_action = ''\n        if task_id:\n            try:\n                _old_a = {r.get('employee_id') for r in db.query(\n                    'SELECT employee_id FROM task_assignees WHERE task_id=?', (task_id,))}\n            except Exception:\n                _old_a = set()\n            _new_a = set(assignees or [])\n            _removed_assignees = {e for e in (_old_a - _new_a) if e}\n            _removed_action = str(body.get('removed_logs_action') or '').strip().lower()\n            if _removed_assignees:\n                _pl = ','.join('?' * len(_removed_assignees))\n                _logs = db.query(\n                    f'SELECT employee_id, COUNT(*) AS cnt, MIN(date) AS first_date, MAX(date) AS last_date '\n                    f'FROM work_logs WHERE task_id=? AND employee_id IN ({_pl}) '\n                    f'GROUP BY employee_id',\n                    (task_id, *list(_removed_assignees)),\n                )\n                if _logs and _removed_action not in ('delete', 'keep'):\n                    _info = []\n                    for _l in _logs:\n                        _emp = db.query_one('SELECT name FROM employees WHERE id=?', (_l['employee_id'],))\n                        _info.append({\n                            'employee_id': _l['employee_id'],\n                            'name': (_emp or {}).get('name', _l['employee_id']),\n                            'logs_count': _l['cnt'],\n                            'first_date': _l['first_date'],\n                            'last_date': _l['last_date'],\n                        })\n                    return jsonify({\n                        'success': False,\n                        'error': 'removed_assignees_have_logs',\n                        'removed': _info,\n                        'task_id': task_id,\n                        'message': 'У удаляемых сотрудников есть отметки по этой задаче',\n                    }), 409\n\n",
+      "content": "",
+      "optional": true
+    },
+    {
+      "type": "replace",
+      "path": "app.py",
+      "find": "\n        # PATCH 1.0.14/1.0.15: удаление логов удалённых исполнителей\n        if task_id and _removed_assignees and _removed_action == 'delete':\n            try:\n                _pl2 = ','.join('?' * len(_removed_assignees))\n                db.exec(\n                    f'DELETE FROM work_logs WHERE task_id=? AND employee_id IN ({_pl2})',\n                    (task_id, *list(_removed_assignees)),\n                )\n                print(f'[task_save] removed logs of {len(_removed_assignees)} assignee(s) from task {task_id}')\n            except Exception as _e:\n                print(f'[task_save] delete removed logs failed: {_e}')\n",
+      "content": "",
+      "optional": true
+    },
+    {
+      "type": "replace",
+      "path": "app.py",
+      "find": "        _audit(db, u, 'create' if created else 'update', 'log', log_id_raw or created,\n               {'employee_id': employee_id, 'task_id': task_id,\n                'date': date_str, 'hours': hours, 'status': status})\n        try:\n            app.config['PLUGIN_REGISTRY'].emit('on_log_save', user=u,\n                                                log_id=created, created=created)\n        except Exception:\n            pass",
+      "content": "        _created_flag = isinstance(created, int) and not isinstance(created, bool)\n        _hook_log_id = int(created) if _created_flag else int(log_id_raw or 0)\n        _audit(db, u, 'create' if _created_flag else 'update', 'log', _hook_log_id,\n               {'employee_id': employee_id, 'task_id': task_id,\n                'date': date_str, 'hours': hours, 'status': status})\n        try:\n            app.config['PLUGIN_REGISTRY'].emit('on_log_save', user=u,\n                                                log_id=_hook_log_id, created=_created_flag)\n        except Exception:\n            pass",
+      "optional": true
+    },
+    {
+      "type": "replace",
+      "path": "app.py",
+      "find": "        elif log_days > 3650:\n            log_days = 3650",
+      "content": "        elif log_days > 730:\n            log_days = 730",
+      "optional": true
+    },
+    {
+      "type": "replace",
+      "path": "app.py",
+      "find": "    }\n    pass\n    t = db.query_one('SELECT * FROM tasks WHERE id=?', (task_id,))",
+      "content": "    }\n    t = db.query_one('SELECT * FROM tasks WHERE id=?', (task_id,))",
+      "optional": true
+    },
+    {
+      "type": "replace",
+      "path": "app.py",
+      "find": "        emps_ids = {e['id'] for e in emps}\n        matrix = {}\n        for l in data['log']:\n            ldate = l.get('date', '')\n            if not ldate or ldate < date_from or ldate > date_to:\n                continue\n            eid = l.get('employee_id')\n            if eid not in emps_ids:\n                continue\n            matrix.setdefault(eid, {})\n            matrix[eid][ldate] = matrix[eid].get(ldate, 0.0) + float(l.get('hours', 0) or 0)",
+      "content": "        emps_ids = {e['id'] for e in emps}\n        try:\n            _ifu_hm = str(db.get_setting('stats_ignore_future', '1')) != '0'\n        except Exception:\n            _ifu_hm = True\n        matrix = {}\n        for l in data['log']:\n            ldate = l.get('date', '')\n            if not ldate or ldate < date_from or ldate > date_to:\n                continue\n            if _ifu_hm and ldate > today:\n                continue\n            eid = l.get('employee_id')\n            if eid not in emps_ids:\n                continue\n            matrix.setdefault(eid, {})\n            matrix[eid][ldate] = matrix[eid].get(ldate, 0.0) + float(l.get('hours', 0) or 0)",
+      "optional": true
+    },
+    {
+      "type": "replace",
+      "path": "app.py",
+      "find": "        unread = sum(1 for r in rows if not r.get('read_at'))\n        return jsonify({'success': True, 'items': rows, 'unread': unread, 'show': _show})",
+      "content": "        unread = sum(1 for r in rows if not r.get('read_at'))\n        try:\n            _cnt = db.query_one(\n                \"SELECT COUNT(*) AS n FROM notifications WHERE to_user_id=? AND TRIM(COALESCE(read_at,''))=''\",\n                (u['id'],),\n            )\n            _unread_total = int((_cnt or {}).get('n', 0))\n        except Exception:\n            _unread_total = unread\n        return jsonify({'success': True, 'items': rows,\n                        'unread': _unread_total,\n                        'unread_in_page': unread,\n                        'show': _show})",
+      "optional": true
+    },
+    {
+      "type": "replace",
+      "path": "app.py",
+      "find": "def _parse_ym(ym):\n    try:\n        y, m = ym.split('-')\n        return int(y), int(m)\n    except Exception:\n        t = date.today()\n        return t.year, t.month",
+      "content": "def _parse_ym(ym):\n    try:\n        y, m = ym.split('-')\n        yi, mi = int(y), int(m)\n        if yi < 1970 or yi > 2200:\n            raise ValueError('year out of range')\n        if mi < 1 or mi > 12:\n            raise ValueError('month out of range')\n        return yi, mi\n    except Exception:\n        t = date.today()\n        return t.year, t.month",
+      "optional": true
+    },
+    {
+      "type": "replace",
+      "path": "plugins/updater.py",
+      "find": "        _skip_rsn = p.get('_skip_reason')\n        if _skip_rsn:\n            entry['warning'] = _skip_rsn\n            out.append(entry)\n            continue",
+      "content": "        _skip_rsn = p.get('_skip_reason')\n        if _skip_rsn:\n            entry['ok'] = False\n            entry['warning'] = _skip_rsn\n            entry['error'] = 'пропущен: ' + _skip_rsn\n            out.append(entry)\n            continue",
+      "optional": true
+    },
+    {
+      "type": "replace",
+      "path": "plugins/updater.py",
+      "find": "            return jsonify({\n                'success': True,\n                'applied_count': len(pending),\n                'total_count': len(pending),\n                'new_version': new_v,\n                'output': apply_out,\n            })",
+      "content": "            return jsonify({\n                'success': True,\n                'applied_count': len(applied_now) or len(pending),\n                'total_count': len(pending),\n                'new_version': new_v,\n                'output': apply_out,\n            })",
+      "optional": true
+    },
+    {
+      "type": "replace",
+      "path": "plugins/updater.py",
+      "find": "            st['_diag_ok'] = True\n            st['_diag_journal_len'] = len(journal)\n            st['journal_corrupt'] = _journal_corrupt",
+      "content": "            st['journal_corrupt'] = _journal_corrupt",
+      "optional": true
+    },
+    {
+      "type": "replace",
+      "path": "plugins/daily_report.py",
+      "find": "        } for e in employees if not e.get('fired_date')]",
+      "content": "        } for e in employees if not e.get('fired')]",
+      "optional": true
+    },
+    {
+      "type": "replace",
+      "path": "plugins/weekly_summary_widget.py",
+      "find": "    norm_total = _norm_per_day_ws * max(1, len(hours_by_emp))\n    avg_load = 0\n    if norm_total > 0:\n        avg_load = round((hours_total / norm_total) * 100)",
+      "content": "    _active_emps = [e for e in data.get('employees', []) if not e.get('fired')]\n    _n_emps = max(1, len(_active_emps))\n    norm_total = _norm_per_day_ws * _n_emps\n    avg_load = 0\n    if norm_total > 0:\n        avg_load = round((hours_total / norm_total) * 100)",
+      "optional": true
+    },
+    {
+      "type": "replace",
+      "path": "requirements.txt",
+      "find": "openpyxl>3.1",
+      "content": "openpyxl>=3.1",
+      "optional": true
+    },
+    {
+      "type": "regex",
+      "path": "client_version.json",
+      "pattern": "\"version\"\\s*:\\s*\"1\\.0\\.[0-9]+\"",
+      "content": "\"version\": \"1.0.3\"",
+      "optional": true
+    },
+    {
+      "type": "write",
+      "path": "plugins/weekly_report.py",
+      "content": "\"\"\"plugins/weekly_report.py — 📥 Недельные отчёты.\"\"\"\n__version__ = '1.0'\n__description__ = 'Недельные отчёты: сводка по командам/отделам, экспорт Excel, автосохранение по пятницам'\n\nimport json\nimport threading\nfrom datetime import date, datetime, timedelta\nfrom io import BytesIO\nfrom pathlib import Path\nfrom flask import request, jsonify, Response, redirect, send_file\n\ntry:\n    from openpyxl import Workbook\n    from openpyxl.styles import Font, PatternFill, Alignment\n    from openpyxl.utils import get_column_letter\n    _HAS_OPENPYXL = True\nexcept ImportError:\n    _HAS_OPENPYXL = False\n\nPLUGIN_DIR = Path(__file__).parent.resolve()\nPROJECT_DIR = PLUGIN_DIR.parent\nCFG_PATH = PLUGIN_DIR / 'weekly_report.json'\n_STOP = threading.Event()\n_LAST_GENERATED = {'week_start': ''}\n\nDEFAULT_CFG = {\n    'enabled': True,\n    'schedule': {'weekday': 4, 'hour': 18, 'minute': 0},\n    'reports_dir': 'share/reports',\n    'keep_reports': 52,\n}\n\nWD_RU = ['Пн', 'Вт', 'Ср', 'Чт', 'Пт', 'Сб', 'Вс']\nABSENCE_LABELS = {'vacation': '🏖 Отпуск', 'sick_leave': '🤒 Больничный',\n                  'business_trip': '✈️ Командировка', 'remote': '🏠 Удаленка'}\nTASK_STATUS_LABELS = {'active': 'Активна', 'done': 'Выполнена',\n                      'paused': 'Приостановлена', 'archived': 'Архив'}\nLOG_STATUS_LABELS = {'planned': '📝 Запланировано', 'in_progress': '🔵 В работе',\n                     'done': '✅ Готово', 'blocked': '🔴 Заблокировано'}\n\n\ndef _load_cfg():\n    if not CFG_PATH.exists():\n        try:\n            CFG_PATH.write_text(json.dumps(DEFAULT_CFG, ensure_ascii=False, indent=2),\n                                encoding='utf-8')\n        except Exception:\n            pass\n        return dict(DEFAULT_CFG)\n    try:\n        data = json.loads(CFG_PATH.read_text(encoding='utf-8'))\n        out = dict(DEFAULT_CFG)\n        out.update(data or {})\n        if not isinstance(out.get('schedule'), dict):\n            out['schedule'] = dict(DEFAULT_CFG['schedule'])\n        return out\n    except Exception:\n        return dict(DEFAULT_CFG)\n\n\ndef _reports_dir():\n    cfg = _load_cfg()\n    p = Path(cfg.get('reports_dir') or 'share/reports')\n    if not p.is_absolute():\n        p = PROJECT_DIR / p\n    try:\n        p.mkdir(parents=True, exist_ok=True)\n    except Exception:\n        pass\n    return p\n\n\ndef _parse_iso(s):\n    try:\n        return datetime.strptime(s, '%Y-%m-%d').date()\n    except Exception:\n        return None\n\n\ndef _period_from_args():\n    preset = (request.args.get('preset') or 'week').strip().lower()\n    today = date.today()\n    if preset == 'prev_week':\n        this_monday = today - timedelta(days=today.weekday())\n        return this_monday - timedelta(days=7), this_monday - timedelta(days=1), 'prev_week'\n    if preset == 'month':\n        return today.replace(day=1), today, 'month'\n    if preset == 'quarter':\n        m = (today.month - 1) // 3 * 3 + 1\n        return today.replace(month=m, day=1), today, 'quarter'\n    if preset == 'custom':\n        d1 = _parse_iso(request.args.get('from') or '')\n        d2 = _parse_iso(request.args.get('to') or '')\n        if d1 and d2 and d1 <= d2:\n            if (d2 - d1).days > 120:\n                d2 = d1 + timedelta(days=120)\n            return d1, d2, 'custom'\n    monday = today - timedelta(days=today.weekday())\n    return monday, monday + timedelta(days=6), 'week'\n\n\ndef _workdays_between(d1, d2, holidays_set=None):\n    h = holidays_set or set()\n    n = 0\n    cur = d1\n    while cur <= d2:\n        if cur.weekday() < 5 and cur.strftime('%Y-%m-%d') not in h:\n            n += 1\n        cur += timedelta(days=1)\n    return n\n\n\ndef _collect_data(db, d1, d2, filters):\n    d1_iso = d1.strftime('%Y-%m-%d')\n    d2_iso = d2.strftime('%Y-%m-%d')\n    data = db.load_all(since=d1_iso)\n    employees = data.get('employees', [])\n    tasks = data.get('tasks', [])\n    log = data.get('log', [])\n    departments = data.get('departments', [])\n    teams = data.get('teams', [])\n    holidays = data.get('holidays', {}) or {}\n\n    emp_by_id = {e['id']: e for e in employees}\n    task_by_id = {t['id']: t for t in tasks}\n    team_members = {}\n    for tm in teams:\n        m = set(tm.get('member_ids') or [])\n        if tm.get('manager_id'):\n            m.add(tm['manager_id'])\n        team_members[tm['id']] = m\n\n    dept_filter = (filters.get('department') or '').strip()\n    team_filter = (filters.get('team') or '').strip()\n    emp_filter = (filters.get('employee') or '').strip()\n\n    allowed_emps = set()\n    for e in employees:\n        if e.get('fired'):\n            continue\n        if dept_filter and e.get('department_id') != dept_filter:\n            continue\n        if team_filter and e['id'] not in team_members.get(team_filter, set()):\n            continue\n        if emp_filter and e['id'] != emp_filter:\n            continue\n        allowed_emps.add(e['id'])\n\n    try:\n        _ifu = str(db.get_setting('stats_ignore_future', '1')) != '0'\n    except Exception:\n        _ifu = True\n    today_iso = date.today().strftime('%Y-%m-%d')\n\n    days = []\n    cur = d1\n    while cur <= d2:\n        days.append(cur.strftime('%Y-%m-%d'))\n        cur += timedelta(days=1)\n\n    day_meta = {}\n    for dk in days:\n        dt = datetime.strptime(dk, '%Y-%m-%d').date()\n        day_meta[dk] = {\n            'date': dk, 'weekday': dt.weekday(),\n            'is_weekend': dt.weekday() >= 5,\n            'is_holiday': dk in holidays,\n            'is_workday': dt.weekday() < 5 and dk not in holidays,\n            'holiday_name': holidays.get(dk, ''),\n        }\n\n    emp_day_hours = {}\n    emp_day_status = {}\n    emp_task = {}\n    _prio = {'done': 4, 'in_progress': 3, 'blocked': 2, 'planned': 1}\n\n    for l in log:\n        eid = l.get('employee_id')\n        if eid not in allowed_emps:\n            continue\n        ld = l.get('date') or ''\n        if ld < d1_iso or ld > d2_iso:\n            continue\n        if _ifu and ld > today_iso:\n            continue\n        try:\n            h = float(l.get('hours') or 0)\n        except Exception:\n            h = 0\n        key = (eid, ld)\n        emp_day_hours[key] = emp_day_hours.get(key, 0.0) + h\n        prev = emp_day_status.get(key, '')\n        cs = l.get('status') or 'in_progress'\n        if _prio.get(cs, 0) > _prio.get(prev, 0):\n            emp_day_status[key] = cs\n        tid = l.get('task_id')\n        if tid:\n            tkey = (eid, tid, ld)\n            emp_task[tkey] = emp_task.get(tkey, 0.0) + h\n\n    emp_rows = []\n    for eid in allowed_emps:\n        e = emp_by_id.get(eid) or {}\n        cells = []\n        total_hours = 0.0\n        for dk in days:\n            h = round(emp_day_hours.get((eid, dk), 0.0) * 4) / 4\n            st = emp_day_status.get((eid, dk), '')\n            abs_type = ''\n            for v in (e.get('vacations') or []):\n                if (v.get('from') or '9999') <= dk <= (v.get('to') or '0000'):\n                    abs_type = v.get('type') or 'vacation'\n                    break\n            cells.append({\n                'date': dk, 'hours': h, 'status': st,\n                'status_label': LOG_STATUS_LABELS.get(st, ''),\n                'absence_type': abs_type,\n                'absence_label': ABSENCE_LABELS.get(abs_type, ''),\n            })\n            total_hours += h\n        emp_rows.append({\n            'employee_id': eid,\n            'employee_name': e.get('name', eid),\n            'employee_color': e.get('color', '#888'),\n            'department': e.get('department', ''),\n            'role': e.get('role', ''),\n            'cells': cells,\n            'total_hours': round(total_hours * 4) / 4,\n        })\n\n    task_agg = {}\n    for (eid, tid, _ld), h in emp_task.items():\n        t = task_by_id.get(tid) or {}\n        a = task_agg.setdefault(tid, {\n            'task_id': tid, 'task_name': t.get('name', ''),\n            'task_icon': t.get('icon', '📋'),\n            'task_status': t.get('status', 'active'),\n            'task_status_label': TASK_STATUS_LABELS.get(t.get('status', 'active'), ''),\n            'total_hours': 0.0, 'employees': set(),\n        })\n        a['total_hours'] += h\n        a['employees'].add(eid)\n\n    by_task = []\n    for a in task_agg.values():\n        by_task.append({\n            'task_id': a['task_id'], 'task_name': a['task_name'],\n            'task_icon': a['task_icon'], 'task_status': a['task_status'],\n            'task_status_label': a['task_status_label'],\n            'total_hours': round(a['total_hours'] * 4) / 4,\n            'employees_count': len(a['employees']),\n        })\n    by_task.sort(key=lambda x: -x['total_hours'])\n\n    total_hours = sum(r['total_hours'] for r in emp_rows)\n    worked_emps = sum(1 for r in emp_rows if r['total_hours'] > 0)\n    workdays = _workdays_between(d1, d2, set(holidays.keys()))\n\n    closed_ids = set()\n    for l in log:\n        eid = l.get('employee_id')\n        if eid not in allowed_emps:\n            continue\n        ld = l.get('date') or ''\n        if ld < d1_iso or ld > d2_iso:\n            continue\n        if l.get('status') == 'done' and l.get('task_id'):\n            closed_ids.add(l['task_id'])\n\n    overdue = 0\n    for t in tasks:\n        st = t.get('status') or 'active'\n        if st not in ('active', 'paused'):\n            continue\n        if not (set(t.get('assignees') or []) & allowed_emps):\n            continue\n        dl = t.get('deadline') or ''\n        if dl and dl < d2_iso:\n            overdue += 1\n\n    kpi = {\n        'total_hours': round(total_hours * 4) / 4,\n        'worked_emps': worked_emps,\n        'emps_total': len(emp_rows),\n        'workdays': workdays,\n        'avg_per_emp': round(total_hours / max(1, worked_emps) * 4) / 4,\n        'tasks_closed': len(closed_ids),\n        'tasks_overdue': overdue,\n    }\n    emp_rows.sort(key=lambda r: (-r['total_hours'], r['employee_name'].lower()))\n\n    return {\n        'from': d1_iso, 'to': d2_iso, 'days': days, 'day_meta': day_meta,\n        'employees': emp_rows, 'by_task': by_task, 'kpi': kpi,\n        'filters': {\n            'departments': [{'id': d['id'], 'name': d.get('name', '')} for d in departments],\n            'teams': [{'id': t['id'], 'name': t.get('name', '')} for t in teams],\n            'employees': [{'id': e['id'], 'name': e.get('name', '')} for e in employees if not e.get('fired')],\n        },\n    }\n\n\ndef _build_xlsx(payload):\n    wb = Workbook()\n    ws = wb.active\n    ws.title = 'Свод'\n    days = payload['days']\n    n_days = len(days)\n\n    ws.cell(1, 1, 'Недельный отчёт: ' + payload['from'] + ' — ' + payload['to']).font = Font(bold=True, size=14)\n    ws.merge_cells(start_row=1, start_column=1, end_row=1, end_column=max(2, 2 + n_days + 1))\n\n    hr = 3\n    _hdr_fill = PatternFill('solid', fgColor='FF2C3E50')\n    _hdr_font = Font(bold=True, color='FFFFFFFF')\n    for ci, lbl in enumerate(('Сотрудник', 'Отдел'), 1):\n        c = ws.cell(hr, ci, lbl)\n        c.font = _hdr_font\n        c.fill = _hdr_fill\n    for i, dk in enumerate(days):\n        dt = datetime.strptime(dk, '%Y-%m-%d').date()\n        c = ws.cell(hr, 3 + i, dt.strftime('%d.%m') + '\\n' + WD_RU[dt.weekday()])\n        c.font = _hdr_font\n        c.fill = _hdr_fill\n        c.alignment = Alignment(horizontal='center', wrap_text=True)\n    c = ws.cell(hr, 3 + n_days, 'Итого')\n    c.font = _hdr_font\n    c.fill = _hdr_fill\n\n    r = hr + 1\n    for emp in payload['employees']:\n        ws.cell(r, 1, emp['employee_name']).font = Font(bold=True)\n        ws.cell(r, 2, emp['department'])\n        for i, cell in enumerate(emp['cells']):\n            v = cell['hours'] if cell['hours'] > 0 else ''\n            if cell['absence_type']:\n                v = ABSENCE_LABELS.get(cell['absence_type'], '')\n            c = ws.cell(r, 3 + i, v)\n            c.alignment = Alignment(horizontal='center')\n            if cell['hours'] > 0:\n                c.fill = PatternFill('solid', fgColor='FFC8E6C9')\n            elif cell['absence_type']:\n                c.fill = PatternFill('solid', fgColor='FFFFE0B2')\n        ws.cell(r, 3 + n_days, emp['total_hours']).font = Font(bold=True)\n        r += 1\n\n    ws.column_dimensions['A'].width = 24\n    ws.column_dimensions['B'].width = 18\n    for i in range(n_days):\n        ws.column_dimensions[get_column_letter(3 + i)].width = 8\n    ws.column_dimensions[get_column_letter(3 + n_days)].width = 10\n\n    ws2 = wb.create_sheet('По задачам')\n    for ci, lbl in enumerate(('Задача', 'Статус', 'Исполнителей', 'Часов'), 1):\n        c = ws2.cell(1, ci, lbl)\n        c.font = _hdr_font\n        c.fill = _hdr_fill\n    r = 2\n    for t in payload['by_task']:\n        ws2.cell(r, 1, (t['task_icon'] or '') + ' ' + (t['task_name'] or ''))\n        ws2.cell(r, 2, t['task_status_label'])\n        ws2.cell(r, 3, t['employees_count'])\n        ws2.cell(r, 4, t['total_hours']).font = Font(bold=True)\n        r += 1\n    ws2.column_dimensions['A'].width = 50\n    ws2.column_dimensions['B'].width = 16\n    ws2.column_dimensions['C'].width = 14\n    ws2.column_dimensions['D'].width = 10\n\n    out = BytesIO()\n    wb.save(out)\n    out.seek(0)\n    return out\n\n\n_JS = r\"\"\"(function(){\n'use strict';\nfunction register(){\n    if (typeof window.__trkRegisterPlugin !== 'function') { setTimeout(register, 200); return; }\n    window.__trkRegisterPlugin({\n        id: 'weekly_report', icon: '📥', name: 'Недельные отчёты',\n        url: '/plugins/weekly_report/', perm: 'plugin.weekly.use'\n    });\n}\nregister();\n})();\"\"\"\n\n\ndef _page_html():\n    return r\"\"\"<!DOCTYPE html>\n<html lang=\"ru\"><head><meta charset=\"UTF-8\"><meta name=\"viewport\" content=\"width=device-width,initial-scale=1.0\">\n<title>📥 Недельные отчёты</title>\n<script>window.REESTR_CSRF = \"__CSRF_TOKEN__\";</script>\n<script src=\"/static/plugin_theme.js\"></script>\n<style>\n*{box-sizing:border-box}\nbody{font-family:-apple-system,BlinkMacSystemFont,\"Segoe UI\",Roboto,Arial,sans-serif;margin:0;padding:16px;font-size:14px;background:var(--pg-bg);color:var(--pg-text);min-height:100vh}\n.w{max-width:1700px;margin:0 auto;display:flex;flex-direction:column;gap:14px}\n.head{display:flex;gap:12px;padding:14px 18px;background:var(--pg-card-bg);border:1px solid var(--pg-card-border);border-radius:14px;flex-wrap:wrap;align-items:center}\nh1{margin:0;font-size:1.2rem;font-weight:800;color:var(--pg-accent)}\n.back{color:var(--pg-desc);text-decoration:none;padding:6px 14px;border:1px solid var(--pg-card-border);border-radius:20px;font-size:.85rem}\n.back:hover{background:var(--pg-accent-bg);color:var(--pg-accent)}\n.nav{display:flex;gap:8px;align-items:center;margin-left:auto;flex-wrap:wrap}\n.nav select,.nav input{padding:6px 10px;border-radius:8px;border:1px solid var(--pg-input-border);background:var(--pg-input-bg);color:var(--pg-text);font-family:inherit;font-size:.82rem}\n.nav button{padding:6px 12px;border-radius:8px;border:1px solid var(--pg-card-border);background:transparent;color:var(--pg-desc);cursor:pointer;font-family:inherit;font-weight:700}\n.nav button:hover{color:var(--pg-accent);border-color:var(--pg-accent)}\n.toolbar{display:flex;gap:8px;padding:12px 16px;background:var(--pg-card-bg);border:1px solid var(--pg-card-border);border-radius:12px;flex-wrap:wrap;align-items:center}\n.toolbar select{padding:6px 10px;border-radius:8px;border:1px solid var(--pg-input-border);background:var(--pg-input-bg);color:var(--pg-text);font-family:inherit;font-size:.82rem}\n.btn{padding:8px 16px;border-radius:8px;border:none;font-family:inherit;font-size:.82rem;font-weight:700;cursor:pointer}\n.btn.prim{background:linear-gradient(135deg,var(--pg-accent),var(--pg-accent-2));color:#0a0a0a}\n.btn.sec{background:transparent;border:1px solid var(--pg-card-border);color:var(--pg-desc)}\n.btn.sec:hover{border-color:var(--pg-accent);color:var(--pg-accent)}\n.kpis{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:10px}\n.kpi{padding:14px 16px;background:var(--pg-card-bg);border:1px solid var(--pg-card-border);border-radius:12px}\n.kpi .v{font-size:1.5rem;font-weight:800;color:var(--pg-accent);line-height:1.05}\n.kpi .l{font-size:.68rem;text-transform:uppercase;color:var(--pg-meta);font-weight:700;margin-top:4px}\n.kpi.danger .v{color:var(--pg-err)}\n.kpi.ok .v{color:var(--pg-ok)}\n.card{background:var(--pg-card-bg);border:1px solid var(--pg-card-border);border-radius:14px;padding:16px}\n.card h2{margin:0 0 10px;font-size:.95rem;color:var(--pg-accent);font-weight:800}\ntable.wk{border-collapse:separate;border-spacing:3px;width:100%;font-size:.8rem}\ntable.wk th,table.wk td{padding:6px;text-align:center;border-radius:6px}\ntable.wk th{color:var(--pg-meta);font-size:.7rem;font-weight:700;background:transparent}\ntable.wk td.emp-cell{text-align:left;background:var(--pg-inner-bg);font-weight:700;min-width:220px}\ntable.wk td.has-data{background:rgba(46,204,113,.18);color:#2ecc71;font-weight:700}\ntable.wk td.absence{background:rgba(245,215,110,.18);color:#f5d76e}\ntable.wk td.total-cell{background:rgba(245,215,110,.18);color:var(--pg-accent);font-weight:800}\n.report-row{display:grid;grid-template-columns:1fr auto auto auto;gap:10px;padding:8px 12px;background:var(--pg-inner-bg);border-radius:8px;margin-top:4px;font-size:.82rem;align-items:center}\n.report-row a{color:var(--pg-accent);text-decoration:none;font-weight:700}\n.report-row a:hover{text-decoration:underline}\n.empty{color:var(--pg-meta);padding:20px;text-align:center;font-style:italic}\n</style></head><body><div class=\"w\">\n<div class=\"head\">\n  <a href=\"/\" class=\"back\">← Трекер</a>\n  <h1>📥 Недельные отчёты</h1>\n  <div class=\"nav\">\n    <select id=\"preset\">\n      <option value=\"week\">Текущая неделя</option>\n      <option value=\"prev_week\">Прошлая</option>\n      <option value=\"month\">Месяц</option>\n      <option value=\"quarter\">Квартал</option>\n    </select>\n    <input type=\"date\" id=\"fromDate\"><input type=\"date\" id=\"toDate\">\n    <button id=\"applyBtn\">✓</button>\n  </div>\n</div>\n<div class=\"toolbar\">\n  <select id=\"deptFilter\"><option value=\"\">Все отделы</option></select>\n  <select id=\"teamFilter\"><option value=\"\">Все команды</option></select>\n  <select id=\"empFilter\"><option value=\"\">Все сотрудники</option></select>\n  <div style=\"margin-left:auto;display:flex;gap:8px\">\n    <button class=\"btn sec\" id=\"exportBtn\">📊 Excel</button>\n    <button class=\"btn prim\" id=\"generateBtn\">💾 Сохранить отчёт</button>\n  </div>\n</div>\n<div class=\"kpis\" id=\"kpis\"></div>\n<div id=\"gridWrap\" class=\"card\"><div class=\"empty\">Загрузка…</div></div>\n<div class=\"card\"><h2>🏆 Топ задач</h2><div id=\"byTask\"></div></div>\n<div class=\"card\"><h2>📂 Сохранённые отчёты</h2><div id=\"reportsList\"><div class=\"empty\">Загрузка…</div></div></div>\n</div>\n<script>\n(function(){\nvar CSRF = window.REESTR_CSRF || '';\nvar state = {preset:'week', from:'', to:'', dept:'', team:'', emp:''};\nfunction esc(s){return String(s==null?'':s).replace(/[&<>\"']/g,function(c){return{'&':'&amp;','<':'&lt;','>':'&gt;','\"':'&quot;',\"'\":'&#39;'}[c];});}\nfunction fmtH(h){h=Number(h)||0;return h===Math.floor(h)?h+' ч':h.toFixed(2).replace(/0+$/,'').replace(/\\.$/,'')+' ч';}\nfunction buildQuery(){\n  var q='?preset='+encodeURIComponent(state.preset);\n  if(state.preset==='custom')q+='&from='+encodeURIComponent(state.from)+'&to='+encodeURIComponent(state.to);\n  if(state.dept)q+='&department='+encodeURIComponent(state.dept);\n  if(state.team)q+='&team='+encodeURIComponent(state.team);\n  if(state.emp)q+='&employee='+encodeURIComponent(state.emp);\n  return q;\n}\nfunction renderKpis(k){\n  var cards=[\n    {v:fmtH(k.total_hours),l:'Часов',cls:''},\n    {v:(k.worked_emps||0)+'/'+(k.emps_total||0),l:'Работали',cls:''},\n    {v:k.workdays||0,l:'Раб. дней',cls:''},\n    {v:fmtH(k.avg_per_emp),l:'Ср. на сотр.',cls:''},\n    {v:k.tasks_closed||0,l:'Задач закрыто',cls:'ok'},\n    {v:k.tasks_overdue||0,l:'Просрочено',cls:(k.tasks_overdue>0?'danger':'')}\n  ];\n  document.getElementById('kpis').innerHTML=cards.map(function(c){\n    return '<div class=\"kpi '+c.cls+'\"><div class=\"v\">'+c.v+'</div><div class=\"l\">'+c.l+'</div></div>';\n  }).join('');\n}\nfunction renderGrid(p){\n  var w=document.getElementById('gridWrap');\n  if(!p.employees||!p.employees.length){w.innerHTML='<div class=\"empty\">Нет сотрудников по фильтрам</div>';return;}\n  var h='<div style=\"overflow:auto\"><table class=\"wk\"><thead><tr><th style=\"text-align:left;min-width:220px\">Сотрудник</th>';\n  p.days.forEach(function(dk){\n    var dt=new Date(dk+'T00:00:00');var wd=dt.getDay();\n    var m=p.day_meta[dk]||{};\n    var lbl=(m.is_holiday?'🎉 ':'')+dt.getDate();\n    var dow=['Вс','Пн','Вт','Ср','Чт','Пт','Сб'][wd];\n    h+='<th title=\"'+dk+'\">'+lbl+'<br><span style=\"font-size:.6rem;opacity:.6\">'+dow+'</span></th>';\n  });\n  h+='<th>Итого</th></tr></thead><tbody>';\n  p.employees.forEach(function(e){\n    h+='<tr><td class=\"emp-cell\"><span style=\"display:inline-block;width:9px;height:9px;border-radius:50%;background:'+esc(e.employee_color)+';margin-right:6px\"></span>'+esc(e.employee_name)+'</td>';\n    e.cells.forEach(function(c){\n      if(c.absence_type){\n        var lbl=c.absence_type==='vacation'?'🏖':(c.absence_type==='sick_leave'?'🤒':(c.absence_type==='business_trip'?'✈️':'🏠'));\n        h+='<td class=\"absence\" title=\"'+esc(c.absence_label)+'\">'+lbl+'</td>';\n      } else if(c.hours>0){\n        h+='<td class=\"has-data\" title=\"'+esc(c.status_label)+'\">'+c.hours+'</td>';\n      } else h+='<td></td>';\n    });\n    h+='<td class=\"total-cell\">'+fmtH(e.total_hours)+'</td></tr>';\n  });\n  h+='</tbody></table></div>';\n  w.innerHTML=h;\n}\nfunction renderByTask(p){\n  var el=document.getElementById('byTask');\n  if(!p.by_task||!p.by_task.length){el.innerHTML='<div class=\"empty\">Задач нет</div>';return;}\n  var h='<table style=\"width:100%;font-size:.82rem;border-collapse:collapse\"><thead><tr style=\"border-bottom:1px solid var(--pg-border-soft);text-align:left;color:var(--pg-meta);font-size:.7rem\"><th style=\"padding:6px\">Задача</th><th style=\"padding:6px\">Статус</th><th style=\"padding:6px;text-align:right\">Сотр.</th><th style=\"padding:6px;text-align:right\">Часов</th></tr></thead><tbody>';\n  p.by_task.slice(0,20).forEach(function(t){\n    h+='<tr><td style=\"padding:6px\">'+esc(t.task_icon||'📋')+' '+esc(t.task_name)+'</td><td style=\"padding:6px\">'+esc(t.task_status_label)+'</td><td style=\"padding:6px;text-align:right\">'+t.employees_count+'</td><td style=\"padding:6px;text-align:right;font-weight:700\">'+fmtH(t.total_hours)+'</td></tr>';\n  });\n  h+='</tbody></table>';el.innerHTML=h;\n}\nfunction applyFilters(p){\n  var f=p.filters||{};\n  [{id:'deptFilter',key:'departments'},{id:'teamFilter',key:'teams'},{id:'empFilter',key:'employees'}].forEach(function(cfg){\n    var sel=document.getElementById(cfg.id);\n    var cur=sel.value;\n    sel.innerHTML='<option value=\"\">Все</option>';\n    var list=f[cfg.key]||[];\n    list.forEach(function(x){sel.insertAdjacentHTML('beforeend','<option value=\"'+esc(x.id)+'\"'+(cur===x.id?' selected':'')+'>'+esc(x.name)+'</option>');});\n  });\n}\nfunction loadData(){\n  document.getElementById('gridWrap').innerHTML='<div class=\"empty\">Загрузка…</div>';\n  fetch('/api/plugins/weekly_report/data'+buildQuery(),{credentials:'same-origin'})\n    .then(function(r){return r.json();})\n    .then(function(d){\n      if(!d.success){document.getElementById('gridWrap').innerHTML='<div class=\"empty\" style=\"color:#ec7063\">Ошибка: '+esc(d.error||'?')+'</div>';return;}\n      document.getElementById('fromDate').value=d.from;\n      document.getElementById('toDate').value=d.to;\n      applyFilters(d);renderKpis(d.kpi||{});renderGrid(d);renderByTask(d);\n    }).catch(function(){document.getElementById('gridWrap').innerHTML='<div class=\"empty\" style=\"color:#ec7063\">Ошибка соединения</div>';});\n}\nfunction loadReports(){\n  fetch('/api/plugins/weekly_report/list',{credentials:'same-origin'})\n    .then(function(r){return r.json();})\n    .then(function(d){\n      var el=document.getElementById('reportsList');\n      if(!d.success||!d.items||!d.items.length){el.innerHTML='<div class=\"empty\">Отчётов пока нет — нажмите «Сохранить отчёт»</div>';return;}\n      el.innerHTML=d.items.map(function(it){\n        return '<div class=\"report-row\"><span>'+esc(it.name)+'</span><span style=\"color:var(--pg-meta)\">'+esc(it.mtime)+'</span><span style=\"color:var(--pg-meta)\">'+Math.round((it.size||0)/1024)+' КБ</span><a href=\"/api/plugins/weekly_report/download?name='+encodeURIComponent(it.name)+'\">⬇ Скачать</a></div>';\n      }).join('');\n    }).catch(function(){});\n}\ndocument.getElementById('preset').addEventListener('change',function(){state.preset=this.value;state.from='';state.to='';loadData();});\ndocument.getElementById('applyBtn').addEventListener('click',function(){\n  var f=document.getElementById('fromDate').value,t=document.getElementById('toDate').value;\n  if(!f||!t)return;state.preset='custom';state.from=f;state.to=t;loadData();\n});\ndocument.getElementById('deptFilter').addEventListener('change',function(){state.dept=this.value;loadData();});\ndocument.getElementById('teamFilter').addEventListener('change',function(){state.team=this.value;loadData();});\ndocument.getElementById('empFilter').addEventListener('change',function(){state.emp=this.value;loadData();});\ndocument.getElementById('exportBtn').addEventListener('click',function(){\n  window.location.href='/api/plugins/weekly_report/export.xlsx'+buildQuery();\n});\ndocument.getElementById('generateBtn').addEventListener('click',function(){\n  var btn=this;btn.disabled=true;\n  var hdrs={'Content-Type':'application/json'};if(CSRF)hdrs['X-CSRF-Token']=CSRF;\n  fetch('/api/plugins/weekly_report/generate'+buildQuery(),{method:'POST',credentials:'same-origin',headers:hdrs})\n    .then(function(r){return r.json();})\n    .then(function(d){btn.disabled=false;if(d.success){alert('✅ Отчёт сохранён: '+d.name);loadReports();}else{alert('❌ '+(d.error||'Ошибка'));}})\n    .catch(function(){btn.disabled=false;alert('❌ Ошибка соединения');});\n});\nloadData();loadReports();\n})();\n</script></body></html>\"\"\"\n\n\ndef _generate_weekly_report(db, ref_date=None):\n    ref = ref_date or date.today()\n    monday = ref - timedelta(days=ref.weekday())\n    sunday = monday + timedelta(days=6)\n    payload = _collect_data(db, monday, sunday, {})\n    xlsx = _build_xlsx(payload)\n    rd = _reports_dir()\n    fname = f'weekly_{monday.strftime(\"%Y%m%d\")}_{sunday.strftime(\"%Y%m%d\")}.xlsx'\n    (rd / fname).write_bytes(xlsx.getvalue())\n    cfg = _load_cfg()\n    keep = int(cfg.get('keep_reports') or 52)\n    try:\n        all_reports = sorted(rd.glob('weekly_*.xlsx'), key=lambda p: p.stat().st_mtime, reverse=True)\n        for old in all_reports[keep:]:\n            try: old.unlink()\n            except Exception: pass\n    except Exception:\n        pass\n    return fname\n\n\ndef _scheduler_worker(db):\n    while not _STOP.is_set():\n        try:\n            cfg = _load_cfg()\n            if not cfg.get('enabled', True):\n                _STOP.wait(3600); continue\n            sched = cfg.get('schedule') or {}\n            target_wd = int(sched.get('weekday', 4))\n            target_h = int(sched.get('hour', 18))\n            target_m = int(sched.get('minute', 0))\n            now = datetime.now()\n            today = now.date()\n            this_monday = today - timedelta(days=today.weekday())\n            target_date = this_monday + timedelta(days=target_wd)\n            target_dt = datetime(target_date.year, target_date.month, target_date.day, target_h, target_m)\n            if now >= target_dt:\n                monday_str = this_monday.strftime('%Y%m%d')\n                sunday_str = (this_monday + timedelta(days=6)).strftime('%Y%m%d')\n                rd = _reports_dir()\n                fname = f'weekly_{monday_str}_{sunday_str}.xlsx'\n                if not (rd / fname).exists() and _LAST_GENERATED.get('week_start') != monday_str:\n                    try:\n                        _generate_weekly_report(db, target_date)\n                        _LAST_GENERATED['week_start'] = monday_str\n                        print(f'[weekly_report] автосохранён: {fname}')\n                    except Exception as e:\n                        print(f'[weekly_report] auto-generate failed: {e}')\n        except Exception as e:\n            print(f'[weekly_report] scheduler error: {e}')\n        _STOP.wait(60)\n\n\ndef register(app, db, hooks):\n    print(f'[weekly_report] v{__version__} · {__description__}')\n    try:\n        _load_cfg()\n    except Exception:\n        pass\n\n    def _auth():\n        try:\n            from auth import current_user, user_has\n            u = current_user(db)\n            if not u: return None\n            if u.get('role') == 'admin': return u\n            if user_has(db, u, 'plugin.weekly.use'): return u\n        except Exception:\n            pass\n        return None\n\n    @app.route('/plugins-assets/weekly_report.js', methods=['GET'])\n    def _wr_js():\n        return app.response_class(_JS, mimetype='application/javascript')\n\n    @app.route('/plugins/weekly_report/', methods=['GET'])\n    def _wr_page():\n        if not _auth():\n            return redirect('/login')\n        try:\n            from auth import ensure_csrf\n            tok = ensure_csrf() or ''\n        except Exception:\n            tok = ''\n        return Response(_page_html().replace('__CSRF_TOKEN__', tok), mimetype='text/html')\n\n    @app.route('/api/plugins/weekly_report/data', methods=['GET'])\n    def _wr_data():\n        if not _auth():\n            return jsonify({'success': False, 'error': 'forbidden'}), 403\n        try:\n            d1, d2, preset = _period_from_args()\n            filters = {'department': request.args.get('department', ''),\n                       'team': request.args.get('team', ''),\n                       'employee': request.args.get('employee', '')}\n            payload = _collect_data(db, d1, d2, filters)\n            payload['success'] = True\n            payload['preset'] = preset\n            return jsonify(payload)\n        except Exception as e:\n            import traceback; traceback.print_exc()\n            return jsonify({'success': False, 'error': str(e)[:200]}), 500\n\n    @app.route('/api/plugins/weekly_report/export.xlsx', methods=['GET'])\n    def _wr_export():\n        if not _auth():\n            return redirect('/login')\n        if not _HAS_OPENPYXL:\n            return jsonify({'success': False, 'error': 'openpyxl не установлен'}), 503\n        try:\n            d1, d2, _ = _period_from_args()\n            filters = {'department': request.args.get('department', ''),\n                       'team': request.args.get('team', ''),\n                       'employee': request.args.get('employee', '')}\n            payload = _collect_data(db, d1, d2, filters)\n            xlsx = _build_xlsx(payload)\n            fname = f'weekly_{d1.strftime(\"%Y%m%d\")}_{d2.strftime(\"%Y%m%d\")}.xlsx'\n            return send_file(xlsx,\n                mimetype='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',\n                as_attachment=True, download_name=fname, max_age=0)\n        except Exception as e:\n            import traceback; traceback.print_exc()\n            return jsonify({'success': False, 'error': str(e)[:200]}), 500\n\n    @app.route('/api/plugins/weekly_report/generate', methods=['POST'])\n    def _wr_generate():\n        if not _auth():\n            return jsonify({'success': False, 'error': 'forbidden'}), 403\n        if not _HAS_OPENPYXL:\n            return jsonify({'success': False, 'error': 'openpyxl не установлен'}), 503\n        try:\n            d1, d2, _ = _period_from_args()\n            filters = {'department': request.args.get('department', ''),\n                       'team': request.args.get('team', ''),\n                       'employee': request.args.get('employee', '')}\n            payload = _collect_data(db, d1, d2, filters)\n            xlsx = _build_xlsx(payload)\n            rd = _reports_dir()\n            fname = f'weekly_{d1.strftime(\"%Y%m%d\")}_{d2.strftime(\"%Y%m%d\")}.xlsx'\n            (rd / fname).write_bytes(xlsx.getvalue())\n            return jsonify({'success': True, 'name': fname})\n        except Exception as e:\n            import traceback; traceback.print_exc()\n            return jsonify({'success': False, 'error': str(e)[:200]}), 500\n\n    @app.route('/api/plugins/weekly_report/list', methods=['GET'])\n    def _wr_list():\n        if not _auth():\n            return jsonify({'success': False, 'error': 'forbidden'}), 403\n        try:\n            rd = _reports_dir()\n            items = []\n            for p in sorted(rd.glob('weekly_*.xlsx'), key=lambda x: x.stat().st_mtime, reverse=True)[:100]:\n                st = p.stat()\n                items.append({'name': p.name, 'size': st.st_size,\n                              'mtime': datetime.fromtimestamp(st.st_mtime).strftime('%Y-%m-%d %H:%M')})\n            return jsonify({'success': True, 'items': items})\n        except Exception as e:\n            return jsonify({'success': False, 'error': str(e)[:200]}), 500\n\n    @app.route('/api/plugins/weekly_report/download', methods=['GET'])\n    def _wr_download():\n        if not _auth():\n            return redirect('/login')\n        name = (request.args.get('name') or '').strip()\n        if (not name or '/' in name or '\\\\\\\\' in name or '..' in name\n                or not name.startswith('weekly_') or not name.endswith('.xlsx')):\n            return jsonify({'success': False, 'error': 'bad name'}), 400\n        rd = _reports_dir()\n        fp = rd / name\n        if not fp.exists():\n            return jsonify({'success': False, 'error': 'not found'}), 404\n        return send_file(str(fp), as_attachment=True, download_name=name, max_age=0)\n\n    def on_startup(**ctx):\n        cfg = _load_cfg()\n        if cfg.get('enabled', True):\n            threading.Thread(target=_scheduler_worker, args=(db,),\n                             name='weekly_report_scheduler', daemon=True).start()\n            print(f'[weekly_report] планировщик запущен ({cfg.get(\"schedule\")})')\n        else:\n            print('[weekly_report] планировщик отключён')\n\n    def on_shutdown(**ctx):\n        _STOP.set()\n\n    hooks.on('on_startup', on_startup)\n    hooks.on('on_shutdown', on_shutdown)\n"
+    },
+    {
+      "type": "write",
+      "path": "plugins/weekly_report.json",
+      "content": {
+        "enabled": true,
+        "schedule": {
+          "weekday": 4,
+          "hour": 18,
+          "minute": 0
+        },
+        "reports_dir": "share/reports",
+        "keep_reports": 52
+      },
+      "optional": true
+    },
+    {
+      "type": "replace",
+      "path": "tamplates/tracker.html",
+      "find": "<script src=\"/plugins-assets/daily_report.js\"></script>",
+      "content": "<script src=\"/plugins-assets/daily_report.js\"></script>\r\n<script src=\"/plugins-assets/weekly_report.js\"></script>",
+      "idempotent": true,
+      "optional": true
+    },
+    {
+      "type": "replace",
+      "path": "templates/tracker.html",
+      "find": "<script src=\"/plugins-assets/daily_report.js\"></script>",
+      "content": "<script src=\"/plugins-assets/daily_report.js\"></script>\r\n<script src=\"/plugins-assets/weekly_report.js\"></script>",
+      "idempotent": true,
+      "optional": true
+    },
+    {
+      "type": "regex",
+      "path": "client_version.json",
+      "pattern": "\"version\"\\s*:\\s*\"[0-9.]+\"",
+      "content": "\"version\": \"1.0.4\"",
+      "optional": true
+    },
+    {
+      "type": "replace",
+      "path": "app.py",
+      "find": "    app.secret_key = cfg.get('secret_key') or secrets.token_urlsafe(48)\n    app.config['SESSION_COOKIE_HTTPONLY'] = True",
+      "content": "    _sk = (cfg.get('secret_key') or '').strip()\n    if not _sk or _sk == '...':\n        _sk = secrets.token_urlsafe(48)\n        print('=' * 60)\n        print('[INIT] secret_key placeholder — генерирую и сохраняю в config.json')\n        try:\n            cfg['secret_key'] = _sk\n            CONFIG_PATH.write_text(json.dumps(cfg, ensure_ascii=False, indent=2), encoding='utf-8')\n            print(f'[INIT] secret_key сохранён ({len(_sk)} символов). Логин переживёт рестарт.')\n        except Exception as _e:\n            print(f'[INIT] НЕ удалось записать config.json: {_e}')\n            print(f'[INIT] Запишите вручную: \"secret_key\": \"{_sk}\"')\n        print('=' * 60)\n    app.secret_key = _sk\n    app.config['SESSION_COOKIE_HTTPONLY'] = True",
+      "optional": true
+    },
+    {
+      "type": "replace",
+      "path": "app.py",
+      "find": "    _sk = (cfg.get('secret_key') or '').strip()\n    if not _sk or _sk == '...':\n        _sk = secrets.token_urlsafe(48)\n        print('=' * 60)\n        print('[INIT] secret_key не задан или placeholder — сгенерирован новый.')\n        print(f'[INIT] Запишите в config.json: \"secret_key\": \"{_sk}\"')\n        print('=' * 60)\n    app.secret_key = _sk\n    app.config['SESSION_COOKIE_HTTPONLY'] = True",
+      "content": "    _sk = (cfg.get('secret_key') or '').strip()\n    if not _sk or _sk == '...':\n        _sk = secrets.token_urlsafe(48)\n        print('=' * 60)\n        print('[INIT] secret_key placeholder — генерирую и сохраняю в config.json')\n        try:\n            cfg['secret_key'] = _sk\n            CONFIG_PATH.write_text(json.dumps(cfg, ensure_ascii=False, indent=2), encoding='utf-8')\n            print(f'[INIT] secret_key сохранён ({len(_sk)} символов). Логин переживёт рестарт.')\n        except Exception as _e:\n            print(f'[INIT] НЕ удалось записать config.json: {_e}')\n            print(f'[INIT] Запишите вручную: \"secret_key\": \"{_sk}\"')\n        print('=' * 60)\n    app.secret_key = _sk\n    app.config['SESSION_COOKIE_HTTPONLY'] = True",
+      "optional": true
+    },
+    {
+      "type": "replace",
+      "path": "app.py",
+      "find": "    app.config['SESSION_COOKIE_SAMESITE'] = 'Lax'\n    app.config['PERMANENT_SESSION_LIFETIME'] = timedelta(\n        days=int(cfg.get('session_lifetime_days', 14))\n    )",
+      "content": "    app.config['SESSION_COOKIE_SAMESITE'] = 'Lax'\n    app.config['SESSION_COOKIE_SECURE'] = False  # HTTP (не HTTPS) — для localhost/LAN\n    app.config['PERMANENT_SESSION_LIFETIME'] = timedelta(\n        days=int(cfg.get('session_lifetime_days', 90))\n    )\n    app.config['SESSION_REFRESH_EACH_REQUEST'] = True",
+      "optional": true
+    },
+    {
+      "type": "replace",
+      "path": "auth.py",
+      "find": "def login_user(uid):\n    session['uid'] = uid\n    session['csrf'] = secrets.token_urlsafe(32)",
+      "content": "def login_user(uid):\n    # v1.0.4: persistent session — куки живут PERMANENT_SESSION_LIFETIME (90д)\n    session.permanent = True\n    session['uid'] = uid\n    session['csrf'] = secrets.token_urlsafe(32)",
+      "optional": true
+    },
+    {
+      "type": "replace",
+      "path": "config.json",
+      "find": "\"session_lifetime_days\": 14",
+      "content": "\"session_lifetime_days\": 90",
+      "optional": true
+    },
+    {
+      "type": "replace",
+      "path": "core/config.json",
+      "find": "\"session_lifetime_days\": 14",
+      "content": "\"session_lifetime_days\": 90",
+      "optional": true
+    },
+    {
+      "type": "regex",
+      "path": "static/tracker.js",
+      "pattern": "[ \\t]*html\\s*\\+=[^\\n]*?/plugins/weekly_report/[^\\n]*?\\r?\\n",
+      "content": "",
+      "optional": true
+    },
+    {
+      "type": "regex",
+      "path": "client_version.json",
+      "pattern": "\"version\"\\s*:\\s*\"[0-9.]+\"",
+      "content": "\"version\": \"1.0.5\"",
+      "optional": true
+    }
+  ]
+}
