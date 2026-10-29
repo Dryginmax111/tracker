@@ -1,0 +1,57 @@
+{
+  "id": "v1.0.13-stats-teams-manager-name",
+  "description": "Статистика по командам/отделам: вместо логина руководителя выводится ФИО. Бэкенд передаёт manager_name, JS использует его с fallback на manager_id для совместимости.",
+  "target_version": "1.0.13",
+  "requires": [],
+  "operations": [
+
+    {
+      "type": "replace",
+      "path": "plugins/stats_teams.py",
+      "find": "        # --- Команды (как в v2) ---\n        teams_out = []",
+      "content": "        # --- Команды (как в v2) ---\n        emp_map_by_id = {e['id']: e for e in all_emps}\n        teams_out = []",
+      "optional": true
+    },
+
+    {
+      "type": "replace",
+      "path": "plugins/stats_teams.py",
+      "find": "        'manager_id': tm.get('manager_id', ''),\n        'department_id': dept_id,",
+      "content": "        'manager_id': tm.get('manager_id', ''),\n        'manager_name': (emp_map_by_id.get(tm.get('manager_id', '')) or {}).get('name', ''),\n        'department_id': dept_id,",
+      "optional": true
+    },
+
+    {
+      "type": "replace",
+      "path": "plugins/stats_teams.py",
+      "find": "        'manager_id': dep.get('head_employee_id') or '',\n        'teams': [",
+      "content": "        'manager_id': dep.get('head_employee_id') or '',\n        'manager_name': (emp_map_by_id.get(dep.get('head_employee_id') or '') or {}).get('name', ''),\n        'teams': [",
+      "optional": true
+    },
+
+    {
+      "type": "replace",
+      "path": "plugins/stats_teams.py",
+      "find": "    var mgr = d.manager_id ? 'Рук.: <b>'+esc(d.manager_id)+'</b>' : '';",
+      "content": "    var _mgrName = d.manager_name || d.manager_id || '';\n    var mgr = _mgrName ? 'Рук.: <b>'+esc(_mgrName)+'</b>' : '';",
+      "optional": true
+    },
+
+    {
+      "type": "replace",
+      "path": "plugins/stats_teams.py",
+      "find": "    var mgrTxt = t.manager_id ? 'Рук.: <b>'+esc(t.manager_id)+'</b>' : 'Без руководителя';",
+      "content": "    var _tmName = t.manager_name || t.manager_id || '';\n    var mgrTxt = _tmName ? 'Рук.: <b>'+esc(_tmName)+'</b>' : 'Без руководителя';",
+      "optional": true
+    },
+
+    {
+      "type": "regex",
+      "path": "client_version.json",
+      "pattern": "\"version\"\\s*:\\s*\"[0-9.]+\"",
+      "content": "\"version\": \"1.0.13\"",
+      "optional": true
+    }
+
+  ]
+}
