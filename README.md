@@ -58,26 +58,6 @@
 cd core
 ..\runtime\embedded\python313\python.exe run.py
 ```
-
----
-### Как восстановить стандартные названия
-
-**Шаг 1. Проверка (dry-run):**
-
-```bat
-"\my-super-app-main\runtime\embedded\python313\python.exe" "\my-super-app-main\core\patcher.py" "\my-super-app-main\revert_kody.json" --dry
-```
-
-**Шаг 2. Применение:**
-
-```bat
-"\my-super-app-main\runtime\embedded\python313\python.exe" "\my-super-app-main\core\patcher.py" "\my-super-app-main\revert_kody.json"
-```
-
-После применения патча в `auth.py`, `db.py`, `schema.sql`, шаблонах и JS-файлах вернутся стандартные `password` / `пароль`. Изменения вступят в силу после перезапуска сервера.
-
----
-
 ## 🔄 Откат патчей
 
 Если после применения патча что-то пошло не так, его можно откатить по имени (ID). Бэкапы изменённых файлов сохраняются автоматически в `patch_backups/`.
@@ -85,13 +65,13 @@ cd core
 **Откатить конкретный патч (например, `1.0.1`):**
 
 ```bat
-"\my-super-app-main\runtime\embedded\python313\python.exe" "\my-super-app-main\core\patcher.py" --rollback 1.0.1
+"\tracker\runtime\embedded\python313\python.exe" "\tracker\core\patcher.py" --rollback 1.0.1
 ```
 
 **Посмотреть список всех применённых патчей:**
 
 ```bat
-"\my-super-app-main\runtime\embedded\python313\python.exe" "\my-super-app-main\core\patcher.py" --applied
+"\tracker\runtime\embedded\python313\python.exe" "\tracker\core\patcher.py" --applied
 ```
 
 ---
@@ -102,8 +82,8 @@ cd core
 
 Специально для этого создан **`START_wheels.bat`** (лежит в корне проекта). Он:
 
-1. Проверяет наличие библиотек `flask` и `openpyxl` в `\my-super-app-main\runtime\embedded\python313\`.
-2. Если их нет — автоматически распаковывает локальные `.whl`-файлы из `\my-super-app-main\tools\wheels\` в `site-packages` встроенного Python.
+1. Проверяет наличие библиотек `flask` и `openpyxl` в `\tracker\runtime\embedded\python313\`.
+2. Если их нет — автоматически распаковывает локальные `.whl`-файлы из `\tracker\tools\wheels\` в `site-packages` встроенного Python.
 3. Запускает сервер.
 
 **Использование:**  
@@ -117,7 +97,6 @@ cd core
 my-super-app-main/
 ├── START.bat                 # обычный запуск сервера
 ├── START_wheels.bat          # запуск с установкой библиотек из tools\wheels
-├── revert_kody.json          # патч возврата password/пароль
 ├── core/
 │   ├── app.py                # API и страницы
 │   ├── auth.py               # сессии и права
@@ -127,7 +106,7 @@ my-super-app-main/
 │   ├── plugins/              # подключаемые модули
 │   ├── static/               # JS / CSS
 │   ├── templates/            # HTML
-│   └── tracker_patches_new/  # патчи обновлений (JSON)
+│   └── patches/  # патчи обновлений (JSON)
 ├── runtime/                  # встроенный Python (портатив)
 │   └── embedded/python313/
 └── tools/
@@ -147,8 +126,8 @@ my-super-app-main/
 2. Применение:
 
 ```bat
-runtime\embedded\python313\python.exe core\patcher.py core\tracker_patches_new\1.0.XX.json --dry
-runtime\embedded\python313\python.exe core\patcher.py core\tracker_patches_new\1.0.XX.json
+runtime\embedded\python313\python.exe core\patcher.py core\patches\1.0.XX.json --dry
+runtime\embedded\python313\python.exe core\patcher.py core\patches\1.0.XX.json
 ```
 
 `--dry` — только проверка, без записи.  
@@ -192,7 +171,7 @@ runtime\embedded\python313\python.exe -m pip install -r core\plugins_requirement
 ## Лицензия и статус
 
 Внутренний / корпоративный инструмент учёта задач.  
-Репозиторий: [Dryginmax111/my-super-app](https://github.com/Dryginmax111/my-super-app)
+Репозиторий: [Dryginmax111/tracker](https://github.com/Dryginmax111/tracker)
 
 ---
 
