@@ -1,0 +1,40 @@
+{
+  "id": "v1.0.3-rollback-fix",
+  "description": "Откат больше не теряет бэкапы. FIX: ops 1-3 уже применены ранним v1.0.6-rollback-fix (updater keep=500 + no cleanup) — помечены optional, чтобы не валить патч. Op 4 (cleanup_db keep=20→500) применяется.",
+  "target_version": "1.0.3",
+  "requires": [],
+  "operations": [
+
+    {
+      "type": "replace",
+      "path": "plugins/updater.py",
+      "find": "    def _cleanup_backups(keep=20):",
+      "content": "    def _cleanup_backups(keep=500):",
+      "optional": true
+    },
+
+    {
+      "type": "replace",
+      "path": "plugins/updater.py",
+      "find": "            # PATCH v1.0.6: подчищаем staging и старые бэкапы после apply.\n            try:\n                _cleanup_staging(keep=10)\n                _cleanup_backups(keep=20)\n            except Exception as _e_cl:\n                print(f'[updater] cleanup after apply failed: {_e_cl}')",
+      "content": "            # v1.0.6-rollback-fix: НЕ удаляем бэкапы после apply — иначе\n            # rollback старых патчей не найдёт .bak-файлы.\n            try:\n                _cleanup_staging(keep=10)\n            except Exception as _e_cl:\n                print(f'[updater] cleanup after apply failed: {_e_cl}')",
+      "optional": true
+    },
+
+    {
+      "type": "replace",
+      "path": "plugins/updater.py",
+      "find": "            # PATCH v1.0.6: подчищаем staging и старые бэкапы после rollback.\n            try:\n                _cleanup_staging(keep=10)\n                _cleanup_backups(keep=20)\n            except Exception as _e_cl:\n                print(f'[updater] cleanup after rollback failed: {_e_cl}')",
+      "content": "            # v1.0.6-rollback-fix: см. комментарий в _up_apply.\n            try:\n                _cleanup_staging(keep=10)\n            except Exception as _e_cl:\n                print(f'[updater] cleanup after rollback failed: {_e_cl}')",
+      "optional": true
+    },
+
+    {
+      "type": "replace",
+      "path": "cleanup_db.py",
+      "find": "    _trim_dir(BASE / 'patch_backups', '**/*.bak-*', 20, 'patch_backups')",
+      "content": "    # v1.0.3-rollback-fix: 20 бэкапов слишком мало — patcher их использует\n    # для отката, потеря = невозможность откатить старый патч.\n    _trim_dir(BASE / 'patch_backups', '**/*.bak-*', 500, 'patch_backups')"
+    }
+
+  ]
+}
