@@ -1,0 +1,43 @@
+{
+  "id": "v1.0.6-perms-tree-full",
+  "description": "Админка/Права доступа: максимально полное дерево пермишенов. В группу «Плагины» добавлены 6 реально существующих плагинов (my_week, excel_export, task_audit, reminders, weekly_summary_widget, assigned_today); в «Блоки» — праздники календаря, теги/пресеты/статусы справочников, фильтры свода, настройка темы; в «Действия» — экспорт данных, смена статуса гипотезы, копирование дня, слияние задач. Все новые «безопасные» ключи добавлены в DEFAULT_USER_PERMISSIONS, чтобы ничего из уже работающего не отвалилось. Структура 4 групп не меняется.",
+  "target_version": "1.0.6",
+  "requires": [],
+  "operations": [
+    {
+      "type": "replace",
+      "path": "auth.py",
+      "find": "            ('plugin.daily_report.use', '🌅 Отчёт за день'),\n        ],\n    },",
+      "content": "            ('plugin.daily_report.use', '🌅 Отчёт за день'),\n            ('plugin.my_week.use', '🗓 Моя неделя'),\n            ('plugin.excel_export.use', '📤 Экспорт свода в Excel'),\n            ('plugin.task_audit.use', '🕵️ История изменений задач'),\n            ('plugin.reminders.use', '🔔 Напоминания (колокольчик)'),\n            ('plugin.weekly_summary_widget.use', '🧩 Виджет «Итоги недели»'),\n            ('plugin.assigned_today.use', '📌 Назначено на день'),\n        ],\n    },",
+      "optional": false
+    },
+    {
+      "type": "replace",
+      "path": "auth.py",
+      "find": "            ('block.dicts.tasks',               'Справочник: задачи'),\n        ],\n    },",
+      "content": "            ('block.dicts.tasks',               'Справочник: задачи'),\n            ('block.dicts.tags',                'Справочник: теги'),\n            ('block.dicts.tag_presets',         'Справочник: пресеты тегов'),\n            ('block.dicts.statuses',            'Справочник: статусы/иконки'),\n            ('block.calendar.holidays',         'Календарь: управление праздниками'),\n            ('block.summary.filters.dept',      'Свод: фильтр по отделам'),\n            ('block.summary.filters.team',      'Свод: фильтр по командам'),\n            ('block.summary.filters.tag',       'Свод: фильтр по тегам'),\n            ('block.ui.theme_picker',           'Интерфейс: выбор темы оформления'),\n        ],\n    },",
+      "optional": false
+    },
+    {
+      "type": "replace",
+      "path": "auth.py",
+      "find": "            ('action.mask.use',              'Использовать маскирование ФИО'),\n        ],\n    },",
+      "content": "            ('action.mask.use',              'Использовать маскирование ФИО'),\n            ('action.export.data',           'Экспорт данных в Excel (календарь/должники)'),\n            ('action.hypothesis.status',     'Менять статус гипотез/заданий'),\n            ('action.log.copy_day',          'Копировать день (перенос отметок)'),\n            ('action.task.merge',            'Объединять (сливать) задачи'),\n        ],\n    },",
+      "optional": false
+    },
+    {
+      "type": "replace",
+      "path": "auth.py",
+      "find": "# v1.1.8: «Отчёт за день» доступен всем активным пользователям (см. также PERMISSION_GROUPS)\nDEFAULT_USER_PERMISSIONS.add('plugin.daily_report.use')",
+      "content": "# v1.1.8: «Отчёт за день» доступен всем активным пользователям (см. также PERMISSION_GROUPS)\nDEFAULT_USER_PERMISSIONS.add('plugin.daily_report.use')\n\n# PATCH v1.0.6: новые ключи, которые уже работают «для всех» — добавляем\n# в дефолт, чтобы user_has() не начал внезапно отказывать существующим\n# пользователям (ключ отсутствует в их perms -> берётся дефолт роли).\nDEFAULT_USER_PERMISSIONS |= {\n    'plugin.my_week.use', 'plugin.excel_export.use', 'plugin.reminders.use',\n    'plugin.weekly_summary_widget.use', 'plugin.assigned_today.use',\n    'action.export.data', 'action.hypothesis.status', 'action.log.copy_day',\n    'block.summary.filters.dept', 'block.summary.filters.team',\n    'block.summary.filters.tag', 'block.ui.theme_picker',\n}\n# task_audit и merge — только для тех, кто ведёт задачи:\nDEFAULT_USER_PERMISSIONS |= {'plugin.task_audit.use'}",
+      "optional": false
+    },
+    {
+      "type": "regex",
+      "path": "client_version.json",
+      "pattern": "\"version\"\\s*:\\s*\"[0-9.]+\"",
+      "content": "\"version\": \"1.0.6\"",
+      "optional": true
+    }
+  ]
+}
