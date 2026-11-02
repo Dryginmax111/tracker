@@ -1,0 +1,40 @@
+{
+ "id": "v1.0.8-fix-render-tasks-full",
+ "description": "Исправление Uncaught ReferenceError: renderTasksFull is not defined (static/tracker.js, обработчик клика по вкладке «Задачи», строка ~4825). Переписан на КОРОТКИЕ устойчивые маркеры: прежняя версия использовала find на 6445 символов всей функции renderTasksFull — он ломался на любой сборке без v1.0.12 (см. лог dry-run: 'replace: не найдено'). Что делает: 1) по 2-строчному маркеру заголовка функции вставляется guard + fallback-stub window.renderTasksFull (вместо падения — сообщение «данные ещё не загружены»; хостинг function-объявления перетирает stub при нормальном старте, реальная логика НЕ меняется); 2) после блока экспортов window.__trk* добавляется глобальный алиас window.renderTasksFull -> внутренней функции (чинит прямые вызовы из обработчиков других патчей); 3) два прямых вызова renderTasksFull() в обработчиках пилюлей тегов заменены на guarded window.__trkRenderTasksFull(); 4) optional regex client_version -> 1.0.13. Идемпотентен.",
+ "target_version": "1.0.8",
+ "requires": [],
+ "replaces": [],
+ "operations": [
+  {
+   "type": "replace",
+   "path": "static/tracker.js",
+   "find": "function renderTasksFull() {\n    var list = $('tasksFullList'); if (!list) return;",
+   "content": "function renderTasksFull() {\n    var list = $('tasksFullList'); if (!list) return;\n\n/* PATCH v1.0.13: если главный IIFE не доинициализировался (ошибка в другом\n   скрипте/блоке), глобальный вызов renderTasksFull() падает с ReferenceError.\n   Безопасный fallback-stub ДО объявления реальной функции: function-объявление\n   поднимается хостингом и перетирает stub при нормальной инициализации. */\nif (typeof window.renderTasksFull !== 'function') {\n    window.renderTasksFull = function () {\n        try {\n            var list = document.getElementById('tasksFullList');\n            if (!list) return;\n            if (!list.innerHTML || /Загрузка|Подождите/.test(list.innerHTML)) {\n                list.innerHTML = '<div class=\"dict-empty\">⚠ Данные ещё не загружены — обновите страницу (F5).</div>';\n            }\n        } catch (e) { console.error('[renderTasksFull fallback]', e); }\n    };\n}\n",
+   "count": 1,
+   "optional": false
+  },
+  {
+   "type": "replace",
+   "path": "static/tracker.js",
+   "find": "window.__trkRenderTasksFull = renderTasksFull;",
+   "content": "window.__trkRenderTasksFull = renderTasksFull;\n/* PATCH v1.0.13: алиас в глобальном scope — обработчики, добавленные другими\n   патчами/плагинами вне IIFE (например клик по вкладке «Задачи»), вызывают\n   renderTasksFull() напрямую; без алиаса это ReferenceError. */\nwindow.renderTasksFull = function () {\n    if (typeof renderTasksFull === 'function') return renderTasksFull();\n};",
+   "count": 1,
+   "optional": true
+  },
+  {
+   "type": "replace",
+   "path": "static/tracker.js",
+   "find": "                if (id.indexOf('tsk') === 0) renderTasksFull();",
+   "content": "                if (id.indexOf('tsk') === 0 && typeof window.__trkRenderTasksFull === 'function') window.__trkRenderTasksFull();",
+   "count": 2,
+   "optional": true
+  },
+  {
+   "type": "regex",
+   "path": "client_version.json",
+   "pattern": "\"version\"\\s*:\\s*\"[0-9.]+\"",
+   "content": "\"version\": \"1.0.13\"",
+   "optional": true
+  }
+ ]
+}
