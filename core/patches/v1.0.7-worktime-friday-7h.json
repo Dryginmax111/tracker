@@ -1,0 +1,88 @@
+{
+ "id": "v1.0.7-worktime-friday-7h",
+ "description": "Рабочее время (режим extended): пятница = 7 ч 00 мин вместо 7 ч 45 мин (7.75 → 7.0), т.е. ПТ с 8:00 до 15:00 при обеде 45 мин. ИТОГО 4×8,25 + 7 = 40 ч/нед ✔. Заменено во всех местах расчёта нормы: app.py (EXTENDED_NORMS, day_norm сетки дней, _day_norm_save проверка перелива при сохранении часа, _cal_norm календарь месяца), capacity.py (ёмкость периода), weekly_summary_widget.py (норма недели), my_week.py (загрузка за период). Файлы work_time_chart/duties/work_time_by_day/shift_schedule в этом репозитории отсутствуют — их строки помечены optional и не ломают цепочку.",
+ "target_version": "1.0.7",
+ "requires": [
+  "v1.0.5-dab-columns-hypo-view"
+ ],
+ "replaces": [],
+ "operations": [
+  {
+   "type": "replace",
+   "path": "app.py",
+   "find": "EXTENDED_NORMS = {0: 8.25, 1: 8.25, 2: 8.25, 3: 8.25, 4: 7.75, 5: 0.0, 6: 0.0}",
+   "content": "EXTENDED_NORMS = {0: 8.25, 1: 8.25, 2: 8.25, 3: 8.25, 4: 7.0, 5: 0.0, 6: 0.0}  # v1.0.7: ПТ = 7 ч (8:00–15:00, обед 45 мин)"
+  },
+  {
+   "type": "replace",
+   "path": "app.py",
+   "find": "            day_norm = 7.75 if wd == 4 else 8.25",
+   "content": "            day_norm = 7.0 if wd == 4 else 8.25"
+  },
+  {
+   "type": "replace",
+   "path": "app.py",
+   "find": "                _day_norm_save = 7.75 if _wd_save == 4 else 8.25",
+   "content": "                _day_norm_save = 7.0 if _wd_save == 4 else 8.25"
+  },
+  {
+   "type": "replace",
+   "path": "app.py",
+   "find": "                _cal_norm = 7.75 if _cal_wd == 4 else 8.25",
+   "content": "                _cal_norm = 7.0 if _cal_wd == 4 else 8.25"
+  },
+  {
+   "type": "replace",
+   "path": "plugins/capacity.py",
+   "find": "                total += 7.75 if wd == 4 else 8.25",
+   "content": "                total += 7.0 if wd == 4 else 8.25"
+  },
+  {
+   "type": "replace",
+   "path": "plugins/weekly_summary_widget.py",
+   "find": "                _norm_per_day_ws += 7.75 if _wd_ws == 4 else 8.25",
+   "content": "                _norm_per_day_ws += 7.0 if _wd_ws == 4 else 8.25"
+  },
+  {
+   "type": "replace",
+   "path": "plugins/my_week.py",
+   "find": "                    _norm_total_mw += 7.75 if _wd_d == 4 else 8.25",
+   "content": "                    _norm_total_mw += 7.0 if _wd_d == 4 else 8.25"
+  },
+  {
+   "type": "regex",
+   "path": "client_version.json",
+   "pattern": "\"version\"\\s*:\\s*\"[0-9.]+\"",
+   "content": "\"version\": \"1.0.7\"",
+   "optional": true
+  },
+  {
+   "type": "replace",
+   "path": "plugins/work_time_chart.py",
+   "find": "PT_END = '15:45'",
+   "content": "PT_END = '15:00'",
+   "optional": true
+  },
+  {
+   "type": "replace",
+   "path": "plugins/duties.py",
+   "find": "7.75",
+   "content": "7.0",
+   "optional": true
+  },
+  {
+   "type": "replace",
+   "path": "plugins/work_time_by_day.py",
+   "find": "7.75",
+   "content": "7.0",
+   "optional": true
+  },
+  {
+   "type": "replace",
+   "path": "plugins/shift_schedule.py",
+   "find": "PT_SHIFT_HOURS = 7.75",
+   "content": "PT_SHIFT_HOURS = 7.0",
+   "optional": true
+  }
+ ]
+}
