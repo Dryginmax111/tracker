@@ -1,0 +1,73 @@
+{
+  "id": "v1.0.12-fix-task-merge-double-block",
+  "description": "Фикс поломки «Объединение карточек». В static/tracker.js есть ДВА блока объединения (старый v1.2.7 и новый v1.2.7-merge-v2), оба защищены одним флагом window.__trkTaskMerge. Старый блок идёт раньше и перехватывает флаг, поэтому merge-v2 (чекбоксы при наведении, MutationObserver, панель, z-index модалки) никогда не запускается — чекбоксы исчезают после перерисовки списка задач. Патч: 1) отключает старый блок; 2) включает merge-v2 с новым guard-флагом; 3) добавляет защиту от двойного клика и спиннер (_showLoader/_hideLoader) в submit() обоих блоков; 4) усиливает fallback кнопки в PATCH 1.0.19. Все операции идемпотентны; missing-блоки помечены optional.",
+  "target_version": "1.0.12",
+  "requires": [],
+  "replaces": [],
+  "operations": [
+    {
+      "type": "replace",
+      "path": "static/tracker.js",
+      "find": "   v1.2.7 — Объединение задач\n   ============================================================ */\n(function(){\n    'use strict';\n    if (window.__trkTaskMerge) return;\n    window.__trkTaskMerge = true;",
+      "content": "   v1.2.7 — Объединение задач\n   ============================================================ */\n/* PATCH v1.0.13: старый урезанный блок v1.2.7 ОТКЛЮЧЁН — он перехватывал\n   общий guard window.__trkTaskMerge и блокировал запуск v1.2.7-merge-v2\n   (полная версия с MutationObserver). Полная версия ниже использует свой\n   guard __trkTaskMergeV2. Код ниже оставлен мёртвым для истории. */\n(function(){\n    'use strict';\n    if (true || window.__trkTaskMerge) return;\n    window.__trkTaskMerge = true;",
+      "count": 1,
+      "optional": false
+    },
+    {
+      "type": "replace",
+      "path": "static/tracker.js",
+      "find": "   v1.2.7-merge-v2 — Объединение задач с чекбоксами при наведении\n   Guard: window.__trkTaskMerge — повторный запуск блока ничего не делает.\n   ============================================================ */\n(function(){\n    'use strict';\n    if (window.__trkTaskMerge) return;\n    window.__trkTaskMerge = true;",
+      "content": "   v1.2.7-merge-v2 — Объединение задач с чекбоксами при наведении\n   PATCH v1.0.13: guard изменён на __trkTaskMergeV2 — раньше общая метка\n   __trkTaskMerge ставилась старым блоком v1.2.7 и v2 не инициализировался.\n   ============================================================ */\n(function(){\n    'use strict';\n    if (window.__trkTaskMergeV2) return;\n    window.__trkTaskMergeV2 = true;",
+      "count": 1,
+      "optional": false
+    },
+    {
+      "type": "replace",
+      "path": "static/tracker.js",
+      "find": "    function submit(ids){\n        var survivor = '';\n        document.querySelectorAll('input[name=\"tmm_survivor\"]').forEach(function(r){ if (r.checked) survivor = r.value; });\n        var payload = {\n            task_ids: ids,\n            survivor_id: survivor,\n        };\n        var hdrs = { 'Content-Type': 'application/json' };\n        if (window.REESTR_CSRF) hdrs['X-CSRF-Token'] = window.REESTR_CSRF;\n        fetch('/api/tracker/task/merge', {",
+      "content": "    function submit(ids){\n        /* PATCH v1.0.13: защита от двойной отправки + мгновенный спиннер.\n           _showLoader/_hideLoader приватны внутри IIFE трекера — светим\n           #globalLoader напрямую (watchdog v1.2.12 закроет его при зависании). */\n        if (window.__trkMergeBusy) return;\n        window.__trkMergeBusy = true;\n        var _gl = document.getElementById('globalLoader');\n        if (_gl) _gl.classList.add('active');\n        var _done = function(){\n            window.__trkMergeBusy = false;\n            if (_gl) _gl.classList.remove('active');\n        };\nvar survivor = '';\n        document.querySelectorAll('input[name=\"tmm_survivor\"]').forEach(function(r){ if (r.checked) survivor = r.value; });\n        var payload = {\n            task_ids: ids,\n            survivor_id: survivor,\n        };\n        var hdrs = { 'Content-Type': 'application/json' };\n        if (window.REESTR_CSRF) hdrs['X-CSRF-Token'] = window.REESTR_CSRF;\n        fetch('/api/tracker/task/merge', {",
+      "count": 1,
+      "optional": true
+    },
+    {
+      "type": "replace",
+      "path": "static/tracker.js",
+      "find": "        .then(function(r){ return r.json(); })\n        .then(function(d){\n            if (!d.success) { alert('Ошибка: ' + (d.error || 'неизвестная')); return; }\n            var modal = document.getElementById('taskMergeModal');\n            if (modal) modal.classList.remove('active');\n            document.querySelectorAll('.task-merge-cb:checked').forEach(function(cb){ cb.checked = false; });\n            updateBar();\n            if (typeof window.__trkLoadState === 'function') window.__trkLoadState();\n            alert('✅ Объединено задач: ' + (1 + (d.merged_ids || []).length));\n        })\n        .catch(function(e){ alert('Ошибка: ' + e.message); });",
+      "content": "        .then(function(r){ return r.json(); })\n        .then(function(d){\n            _done();\n            if (!d.success) { alert('Ошибка: ' + (d.error || 'неизвестная')); return; }\n            var modal = document.getElementById('taskMergeModal');\n            if (modal) modal.classList.remove('active');\n            document.querySelectorAll('.task-merge-cb:checked').forEach(function(cb){ cb.checked = false; });\n            updateBar();\n            if (typeof window.__trkLoadState === 'function') window.__trkLoadState();\n            alert('✅ Объединено задач: ' + (1 + (d.merged_ids || []).length));\n        })\n        .catch(function(e){ _done(); alert('Ошибка: ' + e.message); });",
+      "count": 1,
+      "optional": true
+    },
+    {
+      "type": "replace",
+      "path": "static/tracker.js",
+      "find": "    function submit(ids){\n        var survivor = '';\n        document.querySelectorAll('input[name=\"tmm_survivor\"]').forEach(function(r){ if (r.checked) survivor = r.value; });\n        var payload = { task_ids: ids, survivor_id: survivor };",
+      "content": "    function submit(ids){\n        /* PATCH v1.0.13: защита от двойной отправки + мгновенный спиннер.\n           _showLoader/_hideLoader приватны внутри IIFE трекера — светим\n           #globalLoader напрямую (watchdog v1.2.12 закроет его при зависании). */\n        if (window.__trkMergeBusy) return;\n        window.__trkMergeBusy = true;\n        var _gl = document.getElementById('globalLoader');\n        if (_gl) _gl.classList.add('active');\n        var _done = function(){\n            window.__trkMergeBusy = false;\n            if (_gl) _gl.classList.remove('active');\n        };\nvar survivor = '';\n        document.querySelectorAll('input[name=\"tmm_survivor\"]').forEach(function(r){ if (r.checked) survivor = r.value; });\n        var payload = { task_ids: ids, survivor_id: survivor };",
+      "count": 1,
+      "optional": false
+    },
+    {
+      "type": "replace",
+      "path": "static/tracker.js",
+      "find": "        .then(function(r){ return r.json(); })\n        .then(function(d){\n            if (!d.success) { alert('Ошибка: ' + (d.error || 'неизвестная')); return; }\n            var modal = document.getElementById('taskMergeModal');\n            if (modal) modal.classList.remove('active');\n            document.querySelectorAll('.task-merge-cb:checked').forEach(function(cb){ cb.checked = false; });\n            document.querySelectorAll('.task-card--merge-selected').forEach(function(c){ c.classList.remove('task-card--merge-selected'); });\n            updateBar();\n            if (typeof window.__trkLoadState === 'function') window.__trkLoadState();\n            if (typeof window.__trackerNotify === 'function') window.__trackerNotify('✅ Объединено задач: ' + (1 + (d.merged_ids || []).length), 'success');\n            else alert('✅ Объединено задач: ' + (1 + (d.merged_ids || []).length));\n        })\n        .catch(function(e){ alert('Ошибка: ' + e.message); });",
+      "content": "        .then(function(r){ return r.json(); })\n        .then(function(d){\n            _done();\n            if (!d.success) { alert('Ошибка: ' + (d.error || 'неизвестная')); return; }\n            var modal = document.getElementById('taskMergeModal');\n            if (modal) modal.classList.remove('active');\n            document.querySelectorAll('.task-merge-cb:checked').forEach(function(cb){ cb.checked = false; });\n            document.querySelectorAll('.task-card--merge-selected').forEach(function(c){ c.classList.remove('task-card--merge-selected'); });\n            updateBar();\n            if (typeof window.__trkLoadState === 'function') window.__trkLoadState();\n            if (typeof window.__trackerNotify === 'function') window.__trackerNotify('✅ Объединено задач: ' + (1 + (d.merged_ids || []).length), 'success');\n            else alert('✅ Объединено задач: ' + (1 + (d.merged_ids || []).length));\n        })\n        .catch(function(e){ _done(); alert('Ошибка: ' + e.message); });",
+      "count": 1,
+      "optional": false
+    },
+    {
+      "type": "replace",
+      "path": "static/tracker.js",
+      "find": "        var ids = _selectedIds();\n        if (ids.length < 2) { alert('Выберите минимум 2 задачи'); return; }\n        alert('Модуль объединения не инициализирован. Обновите страницу (Ctrl+F5).');",
+      "content": "        /* PATCH v1.0.13: если merge-v2 по какой-то причине не поднялся —\n           сами поднимаем его и открываем модалку, а не просим F5 */\n        try {\n            if (typeof window.__trkMergeFixScan === 'function') window.__trkMergeFixScan();\n            if (!window.__trkTaskMergeV2 && typeof window.__trkBootMergeV2 === 'function') {\n                window.__trkBootMergeV2();\n            }\n            if (typeof window.__trkTaskMergeOpen === 'function') { window.__trkTaskMergeOpen(); return; }\n        } catch (er) { console.error('[merge-fallback]', er); }\n        var ids = _selectedIds();\n        if (ids.length < 2) { alert('Выберите минимум 2 задачи'); return; }\n        alert('Модуль объединения не инициализирован. Обновите страницу (Ctrl+F5).');",
+      "count": 1,
+      "optional": true
+    },
+    {
+      "type": "replace",
+      "path": "static/tracker.js",
+      "find": "    window.__trkTaskMergeOpen = openModal;\n})();",
+      "content": "    /* PATCH v1.0.13: экспорт boot для ручного подъёма из fallback-кнопки */\n    window.__trkBootMergeV2 = boot;\n    window.__trkTaskMergeOpen = openModal;\n})();",
+      "count": 1,
+      "optional": true
+    }
+  ]
+}
